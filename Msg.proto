@@ -1,0 +1,41 @@
+// see the accompanying arduino sketch (dscv4_arduino_sketch.ino) for instructions 
+//  on compiling this protobuf
+
+syntax = "proto2";
+
+import "nanopb.proto"; // we need this for max_size and fixed_length below
+
+message Msg {
+	// we use max_size and fixed_length so we don't need to write a callback 
+	//  for a bytes field see https://stackoverflow.com/a/45844409
+	optional bytes  content = 1 [(nanopb).max_size = 140, (nanopb).fixed_length = true]; 
+	
+	optional int32  originatorNodeId = 2;
+	//optional int32  originatorTimeHr = 3;
+	//optional int32  originatorTimeMin = 4;
+	//optional int32  originatorTimeSec = 5;
+	optional int32  originatorEpochTime = 21; 
+
+
+	optional int32  originatorBattLevel = 6;
+	optional float  originatorLat = 17;
+	optional float  originatorLng = 18;
+
+	optional int32  receiverNodeId = 19;      // to make flash log analysis easier (ie dont 
+						  //  have to track which device log was from)
+	optional int32  receiverRssi = 7;
+	optional float  receiverSnr = 8;
+	optional int32  receiverFreqErr = 9;
+	optional float  receiverLat = 10;
+	optional float  receiverLng = 11;
+	//optional int32  receiverTimeHr = 12;
+	//optional int32  receiverTimeMin = 13;
+	//optional int32  receiverTimeSec = 14;
+
+	optional int32  receiverEpochTime = 22; // highest
+
+	optional float  senderLat = 15;
+	optional float  senderLng = 16;
+	optional int32  senderTimeQuality = 20; 
+	optional int32	senderEpochTime = 23;
+}
