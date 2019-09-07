@@ -6,6 +6,7 @@
 #include "Msg.pb.h"
 
 // consider switching to https://github.com/rlogiacco/CircularBuffer
+// MAKE SURE APPLY THIS FIX BEFORE USING: https://github.com/sdesalas/Arduino-Queue.h/issues/3
 #include "Queue.h" // copied this file to arduino-1.8.9/libraries/Queue from https://github.com/sdesalas/Arduino-Queue.h/blob/51d2d0c69f5c6d88997b4a900637fcf35294317d/Queue.h
 
 #include <time.h>
@@ -175,7 +176,14 @@ void setup() {
       break;
     case 0x34A7:
       nodeNum = 7;
-      break;              
+      break;     
+         
+    case 0x60A2:
+      nodeNum = 10;
+      break;
+    case 0x648E:
+      nodeNum = 11;
+      break;                
     default : /* Optional */
       Serial.println(" we're running on an unexpected esp32 device!");
   }  
