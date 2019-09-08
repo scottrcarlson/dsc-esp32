@@ -486,6 +486,13 @@ void printMsgLog() {
   fileToRead.close();
 }
 
+void removeLogs() {
+    Serial.printf("Removing log files...\n");      
+    SPIFFS.remove(MSG_LOG_FILENAME);
+    SPIFFS.remove(BATT_LOG_FILENAME);
+    Serial.printf(" Log files removed.\n");    
+}
+
 // 3rd party code (eat it)----------------------------------------------
 void setSystemTimeByEpoch(time_t epoch) {
   timeval tv = { epoch, 0 };
@@ -707,7 +714,7 @@ bool saveMsgsAndBattPctRemainingToFlash() {
   int epochTime = getCurrentSystemTimeAsEpoch();
   
   if(fileToAppend.printf("%d, Compiled "__DATE__" "__TIME__", %d, %d\n", nodeNum, epochTime, getBatteryVoltageADCVal() )){ // TODO: use last ADC reading instead of reading it now
-      Serial.println("Battery log was appended");
+      Serial.println("Battery loprintlg was appended");
   } else {
       Serial.println("Battery log append failed");
   }
@@ -746,31 +753,29 @@ void handleNewUSBSerialCommand(String command) {
   if(command.equals(String("/send"))) {
     Serial.println("Got 'send' cmd.");
     queueNewOutboundMsg("TEST"); 
-   } else if(command.equals(String("/dump msglog"))) {
+  } else if(command.equals(String("/dump msglog"))) {
     printMsgLog();      
   } else if(command.equals(String("/dump battlog"))) {
     printBatteryLog();      
-  } 
-  else if(command.equals(String("/date"))) {
+  } else if(command.equals(String("/removelogs"))) {
+    removeLogs();     
+  } else if(command.equals(String("/date"))) {
     printSystemTime();      
-  }
-  else if(command.equals(String("/testmode on"))) {
+  } else if(command.equals(String("/testmode on"))) {
     transmit_loop = true;
-  }
-  else if(command.equals(String("/testmode off"))) {
+  } else if(command.equals(String("/testmode off"))) {
     transmit_loop = false;
-  }
-  else if(command.equals(String("/help"))) {
+  } else if(command.equals(String("/help"))) {
     Serial.println("DSC Mesh Router Help");
     Serial.println("------");
     Serial.println("/help");
     Serial.println("/dump msglog    show message logs");
     Serial.println("/dump battlog   show battery logs");
+    Serial.println("/removelogs     remove logs from flash");        
     Serial.println("/date           system datetime");
     Serial.println("/testmode on    enable transmit loop"); 
     Serial.println("/testmode off   disable transmit loop"); 
-  }
-  else {
+  } else {
     Serial.printf("Got unknown command: %s", command.c_str());
   }
 }
