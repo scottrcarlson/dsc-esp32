@@ -94,6 +94,7 @@ Queue<Msg> receivedMsgs(30); // assume we'll never have >N received msgs that ha
 *   GLOBALS
 *************/
 bool debug_mode = false;
+
 const int SERIAL_BAUDRATE = 115200;
 int nodeNum = -1;
 unsigned int sentPktCounter = 0;
@@ -126,8 +127,8 @@ long lastSendTime = 0;        // last send time
 int interval = 250;           // interval between sends
 int cntSent = 0;
 int cntRecv = 0;
-float kbSent = 0;           // Total kb sent
-float kbRecv = 0;           // Total kb recv
+int kbSent = 0;           // Total kb sent
+int kbRecv = 0;           // Total kb recv
 
 bool carrier_detect = false; //Carrier detect FLAG (crude)
 int lastCarrierTime;
@@ -136,6 +137,18 @@ int carrier_timeout = 0;  // Carrier FLAG RESET timeout ms (randomly generated)
 int quality_time = -1;
 bool gps_valid = false;
 int last_gps_second = 0;
+
+
+bool transmit_loop = true;
+int lastTransmitLoop = 0;
+const int transmitLoopTime = 10000;
+
+int activeNodes = 0;  // Track nodes in range
+int nodeLastEpoch[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}; // 
+int timeNodeOutOfRange = 60000;
+
+int lastCheckActiveTime = 0;
+int checkActiveTime = 2000;
 /***********
  * OLED Stats Display
  *********/
@@ -152,20 +165,26 @@ void updateOLED(void) {
   display.setTextColor(WHITE);
   display.print(F("DSC")); 
   display.setTextSize(1);             // Normal 1:1 pixel scale
-  display.println(F(" Mesh"));
-  display.println(F(""));
+  display.print(F(" ID"));
+  display.setTextSize(2); 
+  display.print(nodeNum);
+  display.setTextSize(1); 
+  display.print("Nodes");
+  display.setTextSize(2); 
+  display.println(activeNodes);
+  display.setTextSize(1); 
   display.print(F("tx:"));
-  //display.print(String(kbSent));
+  display.print(String(kbSent));
   display.print(F(" rx:"));
-  //display.println(String(kbRecv));
-  display.print(F("rssi:"));
+  display.println(String(kbRecv));
+  /*display.print(F("rssi:"));
   display.print(String(LoRa.packetRssi()));
   display.print(F(" snr:"));
-  display.println(String(LoRa.packetSnr()));
+  display.println(String(LoRa.packetSnr()));*/
   
   struct tm now;
   getLocalTime(&now,0);
-  display.println(&now, "%m%d%Y %H:%M:%S");
+  display.println(&now, "%m/%d/%Y %H:%M:%S");
   display.println(batteryVoltageOLEDText);
 
   display.display();
@@ -331,6 +350,7 @@ int getOurTimeQuality() {
 void handleReceivedLoraPkt(int packetSize){
   uint8_t incomingPkt[256];// for the results of protobuf decoding
 
+  kbRecv++;
   if (debug_mode) {
     // received a packet
     Serial.printf("Received LoRa packet of size %d\n", packetSize);
@@ -341,11 +361,9 @@ void handleReceivedLoraPkt(int packetSize){
   int i = 0;
   while (LoRa.available()) {
     char c = (char)LoRa.read();
-    //Serial.printf("%x", c);
     incomingPkt[i] = c;
     i += 1;
   }
-  //Serial.printf("\n");  
     
   Msg decodedMsg = Msg_init_zero;
   pb_istream_t istream = pb_istream_from_buffer(incomingPkt, packetSize);
@@ -381,6 +399,7 @@ void handleReceivedLoraPkt(int packetSize){
     Serial.println((char*)decodedMsg.content);
   }
   
+  nodeLastEpoch[(int)decodedMsg.originatorNodeId] = millis();
 
   // add those "reception quality" values to the struct  
   decodedMsg.receiverRssi = rssi;
@@ -588,6 +607,7 @@ bool sendAnyQueuedMessages() {
     //Serial.printf(" calling LoRa.endPacket()... (we've seen that function 'hang' before. likely due to unsupported lora rf params)\n");
     LoRa.endPacket();
     //Serial.printf(" LoRa.endPacket() returned!\n");
+    kbSent++;
     return true;
   }
 }
@@ -734,18 +754,49 @@ void handleNewUSBSerialCommand(String command) {
   else if(command.equals(String("/date"))) {
     printSystemTime();      
   }
+  else if(command.equals(String("/testmode on"))) {
+    transmit_loop = true;
+  }
+  else if(command.equals(String("/testmode off"))) {
+    transmit_loop = false;
+  }
+  else if(command.equals(String("/help"))) {
+    Serial.println("DSC Mesh Router Help");
+    Serial.println("------");
+    Serial.println("/help");
+    Serial.println("/dump msglog    show message logs");
+    Serial.println("/dump battlog   show battery logs");
+    Serial.println("/date           system datetime");
+    Serial.println("/testmode on    enable transmit loop"); 
+    Serial.println("/testmode off   disable transmit loop"); 
+  }
   else {
     Serial.printf("Got unknown command: %s", command.c_str());
   }
 }
 
 void loop() {
-  //Serial.printf("loop() %d\n", millis());
-  
-  //digitalWrite(LED_IO14_PIN_NUMBER, HIGH);  // "set GPIO16 low to reset OLED"
-  //delay(500);   
-  //digitalWrite(LED_IO14_PIN_NUMBER, LOW);
 
+  if (millis() - lastCheckActiveTime > checkActiveTime) {
+    lastCheckActiveTime = millis();
+    //Serial.println(lastCheckActiveTime);
+    int totalActive = 0;
+    for (int i=0; i<16;i++) { //Check node activity (max nodes 16 hardcoded)
+      if (millis() - nodeLastEpoch[i] < timeNodeOutOfRange)
+      {
+        if (nodeLastEpoch[i] != 0) {
+          totalActive++;
+        }
+      }
+    }
+    activeNodes = totalActive;
+  }
+  if (transmit_loop) {
+    if (millis() - lastTransmitLoop > transmitLoopTime) {
+      lastTransmitLoop = millis();
+      queueNewOutboundMsg("bbq research raw dogging over lora");
+    }    
+  }
   
   // 1) Output any available data to OLED -------------------------------------------------
   if (millis() - lastOLEDUpdateTime > OLED_UPDATE_INTERVAL_MS) {
