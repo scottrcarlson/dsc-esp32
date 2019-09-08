@@ -5,7 +5,7 @@
 
 #include "Msg.pb.h"
 
-// consider switching to https://github.com/rlogiacco/CircularBuffer
+#include <CircularBuffer.h>
 #include "Queue.h" // copied this file to arduino-1.8.9/libraries/Queue from https://github.com/sdesalas/Arduino-Queue.h/blob/51d2d0c69f5c6d88997b4a900637fcf35294317d/Queue.h
 
 #include <time.h>
@@ -106,6 +106,31 @@ const char BATT_LOG_FILENAME[] = "/battLog.txt";
 int lastFlashWriteTime = 0;
 const int FLASH_WRITE_INTERVAL_MS = 5 * 60 * 1000;
 
+bool isBlueLED = false;
+int lastLEDUpdateTime = 0;
+int lastLEDFlashTime = 40;
+
+CircularBuffer<char, 2000> serial_queue;
+const int outboundSerialMax = 140;
+char outboundSerial[outboundSerialMax]; // Outbound Message chunk
+
+String outgoing;              // outgoing message
+String incoming = "";         // incoming message
+
+bool option_serial_transparent = false;
+bool option_radio_tdma = false;
+bool option_radio_csma = false;
+
+long lastSendTime = 0;        // last send time
+int interval = 250;           // interval between sends
+int cntSent = 0;
+int cntRecv = 0;
+float kbSent = 0;           // Total kb sent
+float kbRecv = 0;           // Total kb recv
+
+bool carrier_detect = false; //Carrier detect FLAG (crude)
+int lastCarrierTime;
+int carrier_timeout = 0;  // Carrier FLAG RESET timeout ms (randomly generated)
 
 /***********
  * OLED Stats Display
@@ -157,6 +182,7 @@ void setup() {
     Serial.println(F("SSD1306 allocation failed"));
   }
 
+  pinMode(BLUE_LED, OUTPUT);
 
   // Initialize GPS ------------------------------------------------------------------------------
   GPSSerial1.begin(GPS_BAUDRATE, SERIAL_8N1, GPS_SERIAL_TX_PIN, GPS_SERIAL_RX_PIN);
@@ -268,6 +294,7 @@ void setup() {
   receivedMsgs.push(msg1);
   receivedMsgs.push(msg2);
   
+
 }
 
 static void attemptGpsNmeaDecode(unsigned long ms) {   // TODO: how much time is required to read all avail data from gps             
@@ -411,7 +438,7 @@ void printMsgLog() {
   fileToRead.close();
 }
 
-// 3rd party code ----------------------------------------------
+// 3rd party code (eat it)----------------------------------------------
 void setSystemTimeByEpoch(time_t epoch) {
   timeval tv = { epoch, 0 };
   timezone tz = { TZ_MN + DST_MN, 0 };
@@ -443,12 +470,28 @@ static time_t yearMonthDayHourMinuteSecondToEpoch(uint16_t year, uint8_t month, 
 // end 3rd party code ----------------------------------------------
 
 
-void queueNewOutboundMsg() {
+/*
+ * Blue LED Control
+ */
+void blue_led(bool state) {
+  if (state) {
+    //Turn on LED
+    digitalWrite(BLUE_LED, HIGH);
+    isBlueLED = true;
+    lastLEDUpdateTime = millis();
+  }
+  else {
+    //Turn off LED
+    isBlueLED = false;  
+    digitalWrite(BLUE_LED, LOW);
+  } 
+}
+
+void queueNewOutboundMsg(char content[]) {
   uint8_t buffer[252]; // to store the results of the encoding process
   // create struct, populate ---------------------------------------------
   pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));  
   Msg locallyComposedMsg = Msg_init_zero;
-  char content[] = "my locally-composed content";
   strncpy((char*)locallyComposedMsg.content, content, strlen(content));
   locallyComposedMsg.has_content = true;
   
@@ -471,7 +514,7 @@ void queueNewOutboundMsg() {
   locallyComposedMsg.has_senderLng = true;  
   locallyComposedMsg.senderEpochTime = getCurrentSystemTimeAsEpoch();
   locallyComposedMsg.has_senderEpochTime = true;
-  locallyComposedMsg.senderTimeQuality = 80;  // 80 is "t-beam w/ gps fix"
+  locallyComposedMsg.senderTimeQuality = -1;  // 80 is "t-beam w/ gps fix"
   locallyComposedMsg.has_senderTimeQuality = true;
   
   // push ------------------------------------------
@@ -620,12 +663,12 @@ bool saveMsgsAndBattPctRemainingToFlash() {
 }
 
 void handleNewUSBSerialCommand(String command) {
-  if(command.equals(String("send\n"))) {
+  if(command.equals(String("/send"))) {
     Serial.println("Got 'send' cmd.");
-    queueNewOutboundMsg(); 
-   } else if(command.equals(String("printmsglog\n"))) {
+    queueNewOutboundMsg("TEST"); 
+   } else if(command.equals(String("/dump msglog"))) {
     printMsgLog();      
-  } else if(command.equals(String("printbattlog\n"))) {
+  } else if(command.equals(String("/dump battlog"))) {
     printBatteryLog();      
   } else {
     Serial.printf("Got unknown command: %s", command.c_str());
@@ -646,7 +689,12 @@ void loop() {
     lastOLEDUpdateTime = millis();
   }
   
+  // Control LED "Animations"
+  if (millis() - lastLEDUpdateTime > lastLEDFlashTime && isBlueLED) {
+    blue_led(false);
+  }
   
+ 
   // N) Input any available data from GPS and parse NMEA sentences ------------------------
   attemptGpsNmeaDecode(1000); 
 
@@ -671,11 +719,13 @@ void loop() {
     //}    
   }
   
-
   // N) Input any available data from LoRa radio -------------------------------------------------
   int packetSize = LoRa.parsePacket();
   if (packetSize) {
     handleReceivedLoraPkt(packetSize); // decode to new stack struct, populate rssi+snr+freq_err
+    carrier_detect = true;
+    carrier_timeout = 1000 + random(1000);    // CSMA (Helps Prevent Collisions)
+    lastCarrierTime = millis();
   } else {
     //Serial.printf(" no lora pkt rx'd\n");
   }
@@ -684,14 +734,58 @@ void loop() {
   byte adcVal = getBatteryVoltageADCVal();
   sprintf(batteryVoltageOLEDText, "Battery: %d%%", BATT_ADC_VAL_TO_PCT_REMAIN[adcVal]); 
 
+ // Basic Carrier Detection Timeout (Have not seen a packet from others)
+  if (millis() - lastCarrierTime >  carrier_timeout) {
+    carrier_detect = false;
+  }
+
   // N) Input any available USB serial command -------------------------------------------------
-  while(Serial.available() > 0) {
-    char newChar = Serial.read();
-    usbSerialCommand.concat(newChar);
-    Serial.printf("%c", newChar); // echo the character
-    if( newChar == '\n' ) {
-      handleNewUSBSerialCommand(usbSerialCommand);
-      usbSerialCommand = "";
+  //Check to see if an Incoming serial buffer has data to process
+  bool msg_ready = false;
+  while (Serial.available() > 0) {
+    char ch = Serial.read();
+
+    if (option_serial_transparent) {
+       serial_queue.push(ch);
+    }
+    else {
+      if (ch == '\n' || ch == '\r') {
+        // Msg Complete
+        if (serial_queue[0] == '/') {      // Possible Command
+          int ndx=0;
+          while (!serial_queue.isEmpty()) {
+            outboundSerial[ndx] += serial_queue.shift();    // Shift element from queue (FIFO)
+            ndx++;
+            if (ndx > outboundSerialMax-1) break;    // Leave room for the NULL termination!
+          }
+
+          handleNewUSBSerialCommand(outboundSerial);
+          serial_queue.clear();
+        }
+        else {
+          serial_queue.push(ch);
+          int ndx=0;
+          while (!serial_queue.isEmpty()) {
+            outboundSerial[ndx] += serial_queue.shift();    // Shift element from queue (FIFO)
+            ndx++;
+            if (ndx > outboundSerialMax-1) break;    // Leave room for the NULL termination!
+          }
+          outboundSerial[ndx+1] = '\0';         // NULL terminate outbound char array
+          queueNewOutboundMsg(outboundSerial);  // ship it!
+          lastSendTime = millis();              // timestamp the message
+          interval = random(250) + 50;          // send interval in milliseconds
+
+          for (int i=0; i<outboundSerialMax; i++) {
+             outboundSerial[i] = '\0';
+          }
+          blue_led(true);
+          serial_queue.clear();
+        }
+        break;
+      }
+      else {
+        serial_queue.push(ch);
+      }
     }
   }
 
