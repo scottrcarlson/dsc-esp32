@@ -22,6 +22,7 @@
 #include <TinyGPS++.h>     
 #include "SPIFFS.h"
 
+// if you get some compiler error about "expansion of macro 'BLACK'"... try uninstalling other OLED libs in arduino ide?
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
@@ -659,7 +660,7 @@ byte getBatteryVoltageADCVal() {
 
 bool saveMsgsAndBattPctRemainingToFlash() {
   Serial.printf(" saveMsgsAndBattPctRemainingToFlash()\n");
-  // write all Msg structs in the receivedMsgs and sentMsgs queues to the corresponding SPIFFS file
+  // write all Msg structs in the receivedMsgs and sentMsgs queues to the corresponding SPIFFS files
   File msgFileToAppend = SPIFFS.open(MSG_LOG_FILENAME, FILE_APPEND);
  
   if(!msgFileToAppend){
@@ -670,14 +671,14 @@ bool saveMsgsAndBattPctRemainingToFlash() {
   while( receivedMsgs.count() > 0 ) {
     cur = receivedMsgs.pop();
     Serial.printf(" originatorNodeId of Msg popped from receivedMsgs queue: %d\n", cur.originatorNodeId);
-    // TODO: encode protobuf, and hex-encode it
-    uint8_t buffer[252]; // to store the results of the encoding process
+    // encode protobuf, then hex-encode that to save to the flash file
+    uint8_t buffer[1024]; // to store the results of the encoding process
     pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));  
 
     // encode ----------------------------------------
     bool status = pb_encode(&stream, Msg_fields, &cur);
     if (!status) {
-      Serial.printf("Decoding FAILED: %s\n\n", PB_GET_ERROR(&stream));
+      Serial.printf("Encoding FAILED: %s\n\n", PB_GET_ERROR(&stream));
       return false;
     }
 
@@ -704,21 +705,21 @@ bool saveMsgsAndBattPctRemainingToFlash() {
   msgFileToAppend.close(); 
   
   // now write battery level to flash -------------------------------------------------
-  File fileToAppend = SPIFFS.open(BATT_LOG_FILENAME, FILE_APPEND);
+  File battFileToAppend = SPIFFS.open(BATT_LOG_FILENAME, FILE_APPEND);
  
-  if(!fileToAppend){
+  if(!battFileToAppend){
     Serial.println("There was an error opening the battery file for appending");
     return false;
   }
 
   int epochTime = getCurrentSystemTimeAsEpoch();
   
-  if(fileToAppend.printf("%d, Compiled "__DATE__" "__TIME__", %d, %d\n", nodeNum, epochTime, getBatteryVoltageADCVal() )){ // TODO: use last ADC reading instead of reading it now
-      Serial.println("Battery loprintlg was appended");
+  if(battFileToAppend.printf("%d, Compiled "__DATE__" "__TIME__", %d, %d\n", nodeNum, epochTime, getBatteryVoltageADCVal() )){ // TODO: use last ADC reading instead of reading it now
+      Serial.println("Battery log was appended");
   } else {
       Serial.println("Battery log append failed");
   }
-  fileToAppend.close();    
+  battFileToAppend.close();    
 }
 
 static void updateGPS() { // Call this frequently.      
@@ -776,7 +777,7 @@ void handleNewUSBSerialCommand(String command) {
     Serial.println("/testmode on    enable transmit loop"); 
     Serial.println("/testmode off   disable transmit loop"); 
   } else {
-    Serial.printf("Got unknown command: %s", command.c_str());
+    Serial.printf("Got unknown command: %s\n", command.c_str());
   }
 }
 
@@ -901,7 +902,7 @@ void loop() {
 
   // save logs to flash every N minutes
   if (millis() - lastFlashWriteTime > FLASH_WRITE_INTERVAL_MS) {
-    Serial.printf("We've reached a N-minute interval. Saving msgs and batt level to flash.\n");
+    Serial.printf("We've reached a %d-minute interval. Saving received/sent msgs and batt level to flash.\n", FLASH_WRITE_INTERVAL_MS/1000);
     saveMsgsAndBattPctRemainingToFlash();   
     lastFlashWriteTime = millis();
   }
