@@ -155,14 +155,9 @@ int checkActiveTime = 2000;
 void updateOLED(void) {
   display.clearDisplay();
 
-  display.setTextSize(1);             // Normal 1:1 pixel scale
   display.setTextColor(WHITE);        // Draw white text
   display.setCursor(0,0);             // Start at top-left corner
-  display.println(F("BBQ Research Presents"));
-
-  display.setCursor(0,10);             // Start at top-left corner
   display.setTextSize(2);             // Draw 2X-scale text
-  display.setTextColor(WHITE);
   display.print(F("DSC")); 
   display.setTextSize(1);             // Normal 1:1 pixel scale
   display.print(F(" ID"));
@@ -176,22 +171,23 @@ void updateOLED(void) {
   display.print(F("tx:"));
   display.print(String(kbSent));
   display.print(F(" rx:"));
-  display.println(String(kbRecv));
-  /*display.print(F("rssi:"));
-  display.print(String(LoRa.packetRssi()));
-  display.print(F(" snr:"));
-  display.println(String(LoRa.packetSnr()));*/
+  display.print(String(kbRecv));
+  display.print(" ");
+  display.println(batteryVoltageOLEDText);
   
   struct tm now;
   getLocalTime(&now,0);
   display.println(&now, "%m/%d/%Y %H:%M:%S");
-  display.println(batteryVoltageOLEDText);
+
 
   display.display();
 
   //messagingOLEDText
   //millisecondsSinceBootOLEDText
-  //
+  /*display.print(F("rssi:"));
+  display.print(String(LoRa.packetRssi()));
+  display.print(F(" snr:"));
+  display.println(String(LoRa.packetSnr()));*/
 }
 
 void setup() {
@@ -714,7 +710,7 @@ bool saveMsgsAndBattPctRemainingToFlash() {
   int epochTime = getCurrentSystemTimeAsEpoch();
   
   if(fileToAppend.printf("%d, Compiled "__DATE__" "__TIME__", %d, %d\n", nodeNum, epochTime, getBatteryVoltageADCVal() )){ // TODO: use last ADC reading instead of reading it now
-      Serial.println("Battery loprintlg was appended");
+      Serial.println("Battery log was appended");
   } else {
       Serial.println("Battery log append failed");
   }
@@ -761,22 +757,77 @@ void handleNewUSBSerialCommand(String command) {
     removeLogs();     
   } else if(command.equals(String("/date"))) {
     printSystemTime();      
+  } else if(command.startsWith(String("/lora freq "))) {
+    //** TODO Calculate valid range based on bandwidth
+    //** (902000000 + bw/2) through (928000000 - bw/2)
+    int freq = command.substring(11).toInt();
+    if (freq >= 902000000 && freq <= 928000000) {
+      Serial.println("set frequency");
+      LoRa.setFrequency(freq);
+    }
+    else {
+      Serial.println("frequency out of range.");
+    }
+  } else if(command.startsWith(String("/lora bw "))) {
+    int bw = command.substring(9).toInt();
+    if (bw == 7800 || bw == 10400 || bw == 15600 || bw == 20800 || bw == 31250 
+                   || bw == 41700 || bw == 62500 || bw == 125000 || bw == 250000) {
+      Serial.println("set bandwidth");
+      LoRa.setSignalBandwidth(bw);
+    }
+    else {
+      Serial.println("invalid bandwidth.");
+    }     
+  } else if(command.startsWith(String("/lora cr "))) {
+    int cr = command.substring(9).toInt();
+    if (cr >= 5 && cr <= 8) {
+      Serial.println("set coding rate");
+      LoRa.setCodingRate4(cr);
+    }
+    else {
+      Serial.println("invalid coding rate");
+    }     
+  } else if(command.startsWith(String("/lora sf "))) {
+    int sf = command.substring(9).toInt();
+    if (sf >=6 && sf <= 12) {
+      Serial.println("set spread factor");
+      LoRa.setSpreadingFactor(sf);
+    }
+    else {
+      Serial.println("invalid coding rate.");
+    }         
   } else if(command.equals(String("/testmode on"))) {
     transmit_loop = true;
   } else if(command.equals(String("/testmode off"))) {
     transmit_loop = false;
+  } else if(command.equals(String("/debug on"))) {
+    debug_mode = true;
+  } else if(command.equals(String("/debug off"))) {
+    debug_mode = false;
   } else if(command.equals(String("/help"))) {
     Serial.println("DSC Mesh Router Help");
-    Serial.println("------");
-    Serial.println("/help");
-    Serial.println("/dump msglog    show message logs");
-    Serial.println("/dump battlog   show battery logs");
-    Serial.println("/removelogs     remove logs from flash");        
-    Serial.println("/date           system datetime");
+    Serial.println("------ general            ----------------------------");
+    Serial.println("/help                     help me!");
+    Serial.println("/debug on                 enable debug output");
+    Serial.println("/debug off                disable debug output");
+    Serial.println("/dump msglog              show message logs");
+    Serial.println("/dump battlog             show battery logs");
+    Serial.println("/removelogs               remove logs from flash");        
+    Serial.println("/date                     system datetime");
+    Serial.println("------ lora radio params  -----------------------------");
+    Serial.println("/lora freq 9150000000      set lora frequency");
+    Serial.println("                            valid (902000000 + bw/2) - (928000000 - bw/2) (U.S.)");
+    Serial.println("/lora bw 250000            set lora bandwidth");
+    Serial.println("                            valid value: 7800,10400,15600,20800,31250,41700,62500,125000,250000");
+    Serial.println("/lora sf 7                 set lora spreading factor");
+    Serial.println("                            valid 6,7,8,9,10,11,12");
+    Serial.println("/lora cr 8                 set lora coding rate");
+    Serial.println("                            valid 5,6,7,8  (4/5,4/6,4/7,4/8)");
+    Serial.println("------ testing            -----------------------------");
     Serial.println("/testmode on    enable transmit loop"); 
     Serial.println("/testmode off   disable transmit loop"); 
   } else {
-    Serial.printf("Got unknown command: %s", command.c_str());
+    Serial.printf("Got unknown command: %s\n", command.c_str());
   }
 }
 
@@ -837,7 +888,7 @@ void loop() {
 
   // N) Input battery voltage value -----------------------------------------------------------------
   byte adcVal = getBatteryVoltageADCVal();
-  sprintf(batteryVoltageOLEDText, "Battery: %d%%", BATT_ADC_VAL_TO_PCT_REMAIN[adcVal]); 
+  sprintf(batteryVoltageOLEDText, "bat:%d%%", BATT_ADC_VAL_TO_PCT_REMAIN[adcVal]); 
 
  // Basic Carrier Detection Timeout (Have not seen a packet from others)
   if (millis() - lastCarrierTime >  carrier_timeout) {
