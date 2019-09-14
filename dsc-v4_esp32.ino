@@ -5,24 +5,26 @@
 
 #include "Msg.pb.h"
 
+#include "build-time_source_code_git_version.h"
+
 #include <CircularBuffer.h>
 #include "Queue.h" // copied this file to arduino-1.8.9/libraries/Queue from https://github.com/sdesalas/Arduino-Queue.h/blob/51d2d0c69f5c6d88997b4a900637fcf35294317d/Queue.h
 
 #include <time.h>
 #include <sys/time.h>                   // struct timeval
 
-#define TZ              1       // (utc+) TZ in hours
-#define DST_MN          60      // use 60mn for summer time in some countries
+#define TZ              1               // (utc+) TZ in hours
+#define DST_MN          60              // use 60mn for summer time in some countries
 #define TZ_MN           ((TZ)*60)
 #define TZ_SEC          ((TZ)*3600)
 #define DST_SEC         ((DST_MN)*60)
 
-#include <SPI.h> // used for connection to LoRa radio
-#include <LoRa.h>
+#include <SPI.h>                        // used for connection to LoRa radio
+#include <LoRa.h>                       // THINKME: 0.6.1 req'd?
 #include <TinyGPS++.h>     
 #include "SPIFFS.h"
 
-// if you get some compiler error about "expansion of macro 'BLACK'"... try uninstalling other OLED libs in arduino ide?
+// if you get a compiler error about "expansion of macro 'BLACK'"... make sure you don't have another sketch (e.g. the pre-derbycon one) being compiled alongside this one
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
@@ -47,7 +49,7 @@
 //  Sketch > Include Library > Contributed Library, select Nanopb.
 
 // Here's one way to connect to the board's UART:
-//  python /usr/lib/python2.7/dist-packages/serial/tools/miniterm.py --eol LF /dev/ttyUSB0 115200
+//  python /usr/lib/python2.7/dist-packages/serial/tools/miniterm.py -e --eol LF /dev/ttyUSB0 115200
 
 
 
@@ -142,7 +144,7 @@ int last_gps_second = 0;
 
 bool transmit_loop = true;
 int lastTransmitLoop = 0;
-const int transmitLoopTime = 10000;
+const int TESTING_TRANSMIT_LOOP_INTERVAL_MS = 10000;
 
 int activeNodes = 0;  // Track nodes in range
 int nodeLastEpoch[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}; // 
@@ -159,7 +161,10 @@ void updateOLED(void) {
   display.setTextSize(1);             // Normal 1:1 pixel scale
   display.setTextColor(WHITE);        // Draw white text
   display.setCursor(0,0);             // Start at top-left corner
-  display.println(F("BBQ Research Presents"));
+  char* dst = (char*) malloc(128);
+  sprintf(dst, "DSCv4 %s", GIT_REV);
+
+  display.println(dst);
 
   display.setCursor(0,10);             // Start at top-left corner
   display.setTextSize(2);             // Draw 2X-scale text
@@ -693,6 +698,7 @@ bool saveMsgsAndBattPctRemainingToFlash() {
       sprintf(temp, "%02X", buffer[i]);
       strcat(serializedHexEncodedMsg, temp);      
     }  
+    Serial.println("");
     strcat(serializedHexEncodedMsg, "\n"); 
     
     if(msgFileToAppend.printf("%d, Compiled "__DATE__" "__TIME__", %s\n", nodeNum, serializedHexEncodedMsg)){ // TODO: use last ADC reading instead of reading it now
@@ -774,7 +780,7 @@ void handleNewUSBSerialCommand(String command) {
     Serial.println("/dump battlog   show battery logs");
     Serial.println("/removelogs     remove logs from flash");        
     Serial.println("/date           system datetime");
-    Serial.println("/testmode on    enable transmit loop"); 
+    Serial.println("/testmode on    enable transmit loop (enabled by default)"); 
     Serial.println("/testmode off   disable transmit loop"); 
   } else {
     Serial.printf("Got unknown command: %s\n", command.c_str());
@@ -798,7 +804,7 @@ void loop() {
     activeNodes = totalActive;
   }
   if (transmit_loop) {
-    if (millis() - lastTransmitLoop > transmitLoopTime) {
+    if (millis() - lastTransmitLoop > TESTING_TRANSMIT_LOOP_INTERVAL_MS) {
       lastTransmitLoop = millis();
       queueNewOutboundMsg("bbq research raw dogging over lora");
     }    
@@ -840,7 +846,7 @@ void loop() {
   byte adcVal = getBatteryVoltageADCVal();
   sprintf(batteryVoltageOLEDText, "Battery: %d%%", BATT_ADC_VAL_TO_PCT_REMAIN[adcVal]); 
 
- // Basic Carrier Detection Timeout (Have not seen a packet from others)
+  // Basic Carrier Detection Timeout (Have not seen a packet from others)
   if (millis() - lastCarrierTime >  carrier_timeout) {
     carrier_detect = false;
   }
@@ -902,16 +908,11 @@ void loop() {
 
   // save logs to flash every N minutes
   if (millis() - lastFlashWriteTime > FLASH_WRITE_INTERVAL_MS) {
-    Serial.printf("We've reached a %d-minute interval. Saving received/sent msgs and batt level to flash.\n", FLASH_WRITE_INTERVAL_MS/1000);
+    Serial.printf("We've reached a %d-minute interval. Saving received/sent msgs and batt level to flash.\n", FLASH_WRITE_INTERVAL_MS/60/1000);
     saveMsgsAndBattPctRemainingToFlash();   
     lastFlashWriteTime = millis();
   }
-
-  // THINKME: worth doing this less often?
   
-  //Serial.printf("we just set system time by epoch to %d\n", yearMonthDayHourMinuteSecondToEpoch(gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute(), gps.time.second()));
-  //printCurrentSystemTimeYearMonthDayHourMinuteSecond();
-  
-  // transmit if we should
+  // transmit if we have anything to transmit
   sendAnyQueuedMessages();
 }
