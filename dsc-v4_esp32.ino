@@ -167,7 +167,9 @@ int timeNodeOutOfRange = 60000;
 int lastCheckActiveTime = 0;
 int checkActiveTime = 2000;
 
-
+int loopPeriod = 0;    // Track loop period
+int loopPeriodMax = 0; // Capture Max loop period
+int lastLoopTime = 0;
 
 /***********
  * OLED Stats Display
@@ -201,7 +203,10 @@ void updateOLED(void) {
   display.println(&now, "%m/%d/%Y %H:%M:%S");
   display.print("Rev: ");
   display.println(janky_version);
-
+  display.print("Loop(ms):");
+  display.print(loopPeriod);
+  display.print(" Max:");
+  display.println(loopPeriodMax);
   display.display();
 
   //messagingOLEDText
@@ -340,10 +345,15 @@ void setup() {
   msg2.originatorNodeId = 999;
   receivedMsgs.push(msg1);
   receivedMsgs.push(msg2);*/
+
+  //Initialize Loop measurement
+  lastLoopTime = millis();
 }
 
 
 static void attemptGpsNmeaDecode(unsigned long ms) {   // TODO: how much time is required to read all avail data from gps             
+  //TODO Configure ublox chip to only send the sentences that we use, this will make this function execute less. 
+
   unsigned long start = millis();
   //do {
     while (GPSSerial1.available()) {
@@ -896,6 +906,12 @@ void handleNewUSBSerialCommand(String command) {
 
 
 void loop() {
+  loopPeriod = millis() - lastLoopTime;
+  lastLoopTime = millis();
+  if (loopPeriod > loopPeriodMax) {
+    loopPeriodMax = loopPeriod;
+  }
+
   if (millis() - lastCheckActiveTime > checkActiveTime) {
     lastCheckActiveTime = millis();
     //Serial.println(lastCheckActiveTime);
