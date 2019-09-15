@@ -635,7 +635,7 @@ bool sendRawMsg(char msg[]) {
   }
   LoRa.beginPacket();
   LoRa.print(msg);
-  LoRa.endPacket(false);         // ASYNC (non-blocking)
+  LoRa.endPacket(true);         // ASYNC (non-blocking)
   kbSent++;                     // TODO: this just packet count, need to convert to kB Same with kbRecv
   blue_led(true);
   return true;
