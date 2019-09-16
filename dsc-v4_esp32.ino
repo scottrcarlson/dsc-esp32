@@ -32,7 +32,7 @@
 #define USER_BTN  39 // User Defined Button (TTGO TBEAM)
 
 //** JANKY VERSION TRACKING
-const int janky_version = 31;
+const int janky_version = 33;
 // Use Tools->Board->T-Beam
 // Tested on TTGO T-Beam boards with silk-screened label: "T22_V07 20180711"
 
@@ -170,6 +170,8 @@ int checkActiveTime = 2000;
 int loopPeriod = 0;    // Track loop period
 int loopPeriodMax = 0; // Capture Max loop period
 int lastLoopTime = 0;
+
+float symbolRate = 1.75 * (pow(2,7) / 125000.0) * 1000.0;   // symbol rate in sec = 2^SF / BW
 
 /***********
  * OLED Stats Display
@@ -379,9 +381,8 @@ int getOurTimeQuality() {
 
 
 void handleReceivedLoraPkt(int packetSize){
-  uint8_t incomingPkt[256];// for the results of protobuf decoding
-
-  kbRecv++;   // TODO this should be in unit kB
+  kbRecv += packetSize / 1000.0;    // unit kB
+ 
   if (debug_mode) {
     // received a packet
     Serial.printf("Received LoRa packet of size %d\n", packetSize);
@@ -398,12 +399,14 @@ void handleReceivedLoraPkt(int packetSize){
     Serial.print(incoming);
   }
   else {
+    uint8_t incomingPkt[256];// for the results of protobuf decoding
     int i = 0;
     while (LoRa.available()) {
       char c = (char)LoRa.read();
       incomingPkt[i] = c;
       i += 1;
     }
+   
     Msg decodedMsg = Msg_init_zero;
     pb_istream_t istream = pb_istream_from_buffer(incomingPkt, packetSize);
     bool status = pb_decode(&istream, Msg_fields, &decodedMsg);
@@ -628,19 +631,6 @@ void queueNewOutboundMsg(char content[]) {
     Serial.printf("queued new outbound msg\n");
   }
 }
-
-bool sendRawMsg(char msg[]) {
-  if (carrier_detect) {
-    return false;
-  }
-  LoRa.beginPacket();
-  LoRa.print(msg);
-  LoRa.endPacket(true);         // ASYNC (non-blocking)
-  kbSent++;                     // TODO: this just packet count, need to convert to kB Same with kbRecv
-  blue_led(true);
-  return true;
-}
-
 
 bool sendAnyQueuedMessages() {
   if (carrier_detect) {
@@ -1046,22 +1036,35 @@ void loop() {
   
   //**TODO send interval is directly dependant on rf params and packet size
   //**calculate optimal interval per packet
-  if (millis() - lastSendTime > TRANSMIT_INTERVAL_MS) {
+  if (millis() - lastSendTime > TRANSMIT_INTERVAL_MS && !carrier_detect) {
     lastSendTime = millis();
-    if (option_serial_transparent) { //this garbage will be replaced by tx time calculation soon
-      TRANSMIT_INTERVAL_MS = 600;
-      int ndx=0;
-      while (!serial_queue.isEmpty()) {
-        outboundTransparentSerial[ndx] += serial_queue.shift();        // Shift element from queue (FIFO)
-        ndx++;
-        if (ndx > outboundTransparentMax-1) break;               // Leave room for the NULL termination!
-      }
 
-      if (ndx != 0) {
-        outboundTransparentSerial[ndx+1] = '\0';
-        sendRawMsg(outboundTransparentSerial);
-        for (int i=0; i<outboundTransparentMax; i++) {
-           outboundTransparentSerial[i] = '\0';
+    if (option_serial_transparent) {
+      int ndx=0;
+      if (!serial_queue.isEmpty()) {
+        if (LoRa.beginPacket()) {
+          while (!serial_queue.isEmpty()) {
+            outboundTransparentSerial[ndx] = serial_queue.shift();  // Shift element from queue (FIFO)
+            ndx++;
+            if (ndx > outboundTransparentMax-1) break;               // Leave room for the NULL termination!
+          }
+
+          if (ndx != 0) {
+            outboundTransparentSerial[ndx+1] = '\0';
+            LoRa.print(outboundTransparentSerial);
+            kbSent += ndx+1 / 1000.0;   //unit kB
+            blue_led(true);
+            
+            TRANSMIT_INTERVAL_MS = 25 + symbolRate * (ndx+1);
+            
+            for (int i=0; i<outboundTransparentMax; i++) {
+               outboundTransparentSerial[i] = '\0';
+            }
+          }
+          LoRa.endPacket(true);         // ASYNC (non-blocking)
+        }
+        else {
+          Serial.println("not ready to send");  // if get here our symbol rate is too small
         }
       }
     }
