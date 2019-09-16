@@ -52,18 +52,6 @@ const int janky_version = 33;
 //  python /usr/lib/python2.7/dist-packages/serial/tools/miniterm.py --eol LF /dev/ttyUSB0 115200
 
 
-/**** Notes on Lora Receiving (Packet Mode vs Continuous Mode w/ Interrupt)
-// After implementing transparent mode, I am seeing some deficiencies with the way we are 
-// handling incoming lora packets.
-// this thread may be of interest
-// https://github.com/sandeepmistry/arduino-LoRa/issues/176
-// It seems that entering continuous receive mode (with interrupt callback) is ideal to reduce
-// loss of bytes, however, on the other end, this might cause issues with other functions. 
-// Definitely need to do some testing.
-// if LoRa.parsePacket is not called often enough then we will lose packets (packet mode)
-// It might even be the case where we use continuous receive only while in transparent mode. ??? -scott
-**********/
-
 // LoRa globals --------------------------------------------------
 #define RST     14   // GPIO14 -- SX1278's RESET
 #define DI0     26   // GPIO26 -- SX1278's IRQ(Interrupt Request)
