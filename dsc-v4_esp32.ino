@@ -33,6 +33,8 @@
 #define BLUE_LED  14 // LED (TTGO TBEAM)
 #define USER_BTN  39 // User Defined Button (TTGO TBEAM)
 
+//** JANKY VERSION TRACKING
+const int janky_version = 33;
 // Use Tools->Board->T-Beam
 // Tested on TTGO T-Beam boards with silk-screened label: "T22_V07 20180711"
 
@@ -50,7 +52,6 @@
 
 // Here's one way to connect to the board's UART:
 //  python /usr/lib/python2.7/dist-packages/serial/tools/miniterm.py -e --eol LF /dev/ttyUSB0 115200
-
 
 
 // LoRa globals --------------------------------------------------
@@ -115,19 +116,23 @@ bool isBlueLED = false;
 int lastLEDUpdateTime = 0;
 int lastLEDFlashTime = 40;
 
-CircularBuffer<char, 2000> serial_queue;
+CircularBuffer<char, 5000> serial_queue;
 const int outboundSerialMax = 140;
 char outboundSerial[outboundSerialMax]; // Outbound Message chunk
 
+const int outboundTransparentMax = 255;
+char outboundTransparentSerial[outboundTransparentMax]; // Outbound Message chunk
+
 String outgoing;              // outgoing message
 String incoming = "";         // incoming message
+CircularBuffer<char, 6> transparentEscape;
 
 bool option_serial_transparent = false;
 bool option_radio_tdma = false;
 bool option_radio_csma = false;
 
-long lastSendTime = 0;        // last send time
-int interval = 250;           // interval between sends
+long lastSendTime = 0;                // last send time
+int TRANSMIT_INTERVAL_MS = 250;       // interval between sends
 int cntSent = 0;
 int cntRecv = 0;
 int kbSent = 0;           // Total kb sent
@@ -141,7 +146,6 @@ int quality_time = -1;
 bool gps_valid = false;
 int last_gps_second = 0;
 
-
 bool transmit_loop = true;
 int lastTransmitLoop = 0;
 const int TESTING_TRANSMIT_LOOP_INTERVAL_MS = 10000;
@@ -152,6 +156,13 @@ int timeNodeOutOfRange = 60000;
 
 int lastCheckActiveTime = 0;
 int checkActiveTime = 2000;
+
+int loopPeriod = 0;    // Track loop period
+int loopPeriodMax = 0; // Capture Max loop period
+int lastLoopTime = 0;
+
+float symbolRate = 1.75 * (pow(2,7) / 125000.0) * 1000.0;   // symbol rate in sec = 2^SF / BW
+
 /***********
  * OLED Stats Display
  *********/
@@ -185,12 +196,17 @@ void updateOLED(void) {
   display.print(String(kbRecv));
   display.print(" ");
   display.println(batteryVoltageOLEDText);
+
   
   struct tm now;
   getLocalTime(&now,0);
   display.println(&now, "%m/%d/%Y %H:%M:%S");
-
-
+  display.print("Rev: ");
+  display.println(janky_version);
+  display.print("Loop(ms):");
+  display.print(loopPeriod);
+  display.print(" Max:");
+  display.println(loopPeriodMax);
   display.display();
 
   //messagingOLEDText
@@ -201,6 +217,7 @@ void updateOLED(void) {
   display.println(String(LoRa.packetSnr()));*/
 }
 
+
 void setup() {
   // Initialize UART ------------------------------------------------------------------------------
   Serial.begin(SERIAL_BAUDRATE);
@@ -208,18 +225,19 @@ void setup() {
     char t = Serial.read();
   }
   //while (!Serial); // TODO: blink led to indicate failure?
+
   Serial.println("BBQ Research DSCv4 firmware version " __VERSION__ " compiled on " __DATE__ " at " __TIME__); // TODO: use COMPILE_DATE
   
   // Initialize OLED ------------------------------------------------------------------------------
  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Address 0x3D for 128x64
-    Serial.println(F("SSD1306 allocation failed"));
+    if (!option_serial_transparent) Serial.println(F("SSD1306 allocation failed"));
   }
 
   pinMode(BLUE_LED, OUTPUT);
 
   // Initialize GPS ------------------------------------------------------------------------------
   GPSSerial1.begin(GPS_BAUDRATE, SERIAL_8N1, GPS_SERIAL_TX_PIN, GPS_SERIAL_RX_PIN);
-  Serial.println(" GPS initialized.");
+  if (!option_serial_transparent) Serial.println(" GPS initialized.");
 
   // Initialize battery voltage ADC --------------------------------------------------------------
   analogReadResolution(ADC_BITS); // "Default of 12 is not very linear. Recommended to use 10 or 11 depending on needed resolution."
@@ -245,7 +263,7 @@ void setup() {
   BATT_ADC_VAL_TO_PCT_REMAIN[29] = 2;
   BATT_ADC_VAL_TO_PCT_REMAIN[28] = 0;// 28 is lowest val we've seen
   BATT_ADC_VAL_TO_PCT_REMAIN[27] = -1;   
-  Serial.println(" Battery voltage monitor initialized.");
+  if (!option_serial_transparent) Serial.println(" Battery voltage monitor initialized.");
 
 
   // Initialize Node ID -------------------------------------------------------------------------------
@@ -285,52 +303,57 @@ void setup() {
     default : /* Optional */
       Serial.println(" we're running on an unexpected esp32 device!");
   }  
-  Serial.printf(" Node ID (%d) (0x%04X) initialized.\n", nodeNum, (uint16_t)(chipid>>32));
+  if (!option_serial_transparent) Serial.printf(" Node ID (%d) (0x%04X) initialized.\n", nodeNum, (uint16_t)(chipid>>32));
   
   // Initialize LoRa -------------------------------------------------------------------------------
   LoRa.setPins(SS, RST, DI0);
   //LoRa.setFrequency(frequency);                               // "(433E6, 866E6, 915E6)" (we set the freq using LORA_BAND below)
-  //LoRa.setSpreadingFactor(10);   <---- this may have been cause of modem flakiness   //TODO: use constants       // "Supported values are between 6 and 12. If a spreading factor of 6 is set, implicit header mode must be used to transmit and receive packets. 7 is default."
-  //LoRa.setSignalBandwidth(125E3);  <---- this may have been cause of modem flakiness                             // "Supported values are 7.8E3, 10.4E3, 15.6E3, 20.8E3, 31.25E3, 41.7E3, 62.5E3, 125E3 (default), and 250E3."
-  //LoRa.setCodingRate4(5);   <---- this may have been cause of modem flakiness                                    // "Supported values are between 5 (default) and 8, these correspond to coding rates of 4/5 and 4/8. The coding rate numerator is fixed at 4."
-  //LoRa.setPreambleLength(8);   <---- this may have been cause of modem flakiness                                 // "Supported values are between 6 and 65535 (8 is default)"
+  LoRa.setSpreadingFactor(7); 
+  LoRa.setSignalBandwidth(125E3); 
+  LoRa.setCodingRate4(5);
+  //LoRa.setPreambleLength(8); 
   //LoRa.setSyncWord(0x12);                                     // "byte value to use as the sync word, defaults to 0x12"
   //LoRa.enableCrc(); //LoRa.disableCrc();                      // "by default a CRC is not used."
   //LoRa.enableInvertIQ(); //LoRa.disableInvertIQ();            // "by default a invertIQ is not used."
   //LoRa.setTxPower(txPower);                                   // "TX power in dB, defaults to 17"
+
   if (!LoRa.begin(LORA_BAND)) {
     Serial.println(" Starting LoRa failed!");
     Serial.flush();
     while (1);
   }
-  Serial.println(" LoRa intialized.");
+  if (!option_serial_transparent) Serial.println(" LoRa intialized.");
+
 
   // Initialize SPIFFS -------------------------------------------------------------------------
   if (!SPIFFS.begin(true)) { // this can take 5+ sec on a new device
     Serial.println("An Error has occurred while mounting SPIFFS");
     return;
   }  
-  Serial.println(" SPIFFS intialized.");
+  if (!option_serial_transparent) Serial.println(" SPIFFS intialized.");
 
   // Initialize misc ---------------------------------------------------------------------------
   //pinMode(LED_IO14_PIN_NUMBER, OUTPUT); 
 
-  Serial.println("");
+  delay(200);
   Serial.flush();
-  delay(500); // maybe not necessary?
   
-  Serial.printf("Adding two fake entries to receivedMsgs queue\n");
+  /*Serial.printf("Adding two fake entries to receivedMsgs queue\n");
   Msg msg1;
   msg1.originatorNodeId = 99;
   Msg msg2;
   msg2.originatorNodeId = 999;
   receivedMsgs.push(msg1);
-  receivedMsgs.push(msg2);
-  
+  receivedMsgs.push(msg2);*/
 
+  //Initialize Loop measurement
+  lastLoopTime = millis();
 }
 
+
 static void attemptGpsNmeaDecode(unsigned long ms) {   // TODO: how much time is required to read all avail data from gps             
+  //TODO Configure ublox chip to only send the sentences that we use, this will make this function execute less. 
+
   unsigned long start = millis();
   //do {
     while (GPSSerial1.available()) {
@@ -339,7 +362,7 @@ static void attemptGpsNmeaDecode(unsigned long ms) {   // TODO: how much time is
   //} while (millis() - start < ms); // this sets sets an upper limit on time consumed
   
   if (millis() > 5000 && gps.charsProcessed() < 10) { // TODO: use constants
-    Serial.println(F("\nwe've received <10 chars from GPS and we booted >5sec ago - check gps wiring!"));
+    if (!option_serial_transparent) Serial.println(F("\nwe've received <10 chars from GPS and we booted >5sec ago - check gps wiring!"));
     // dump the stream to Serial
     //Serial.println("GPS stream dump:");
     //while (true) { // infinite loop
@@ -354,10 +377,10 @@ int getOurTimeQuality() {
   return quality_time;  
 }
 
-void handleReceivedLoraPkt(int packetSize){
-  uint8_t incomingPkt[256];// for the results of protobuf decoding
 
-  kbRecv++;
+void handleReceivedLoraPkt(int packetSize){
+  kbRecv += packetSize / 1000.0;    // unit kB
+ 
   if (debug_mode) {
     // received a packet
     Serial.printf("Received LoRa packet of size %d\n", packetSize);
@@ -365,103 +388,118 @@ void handleReceivedLoraPkt(int packetSize){
     // print the entire received packet 
     Serial.printf(" Packet bytes in hex: ");
   }
-  int i = 0;
-  while (LoRa.available()) {
-    char c = (char)LoRa.read();
-    incomingPkt[i] = c;
-    i += 1;
+
+  if (option_serial_transparent) {
+    String incoming = "";
+    while (LoRa.available()) {
+      incoming += (char)LoRa.read();
+    }
+    Serial.print(incoming);
   }
-    
-  Msg decodedMsg = Msg_init_zero;
-  pb_istream_t istream = pb_istream_from_buffer(incomingPkt, packetSize);
-  bool status = pb_decode(&istream, Msg_fields, &decodedMsg);
-  if (!status) {
-    printf("Decoding FAILED: %s\n\n", PB_GET_ERROR(&istream));
-    return;
-  }   
-  
-  totalReceivedBytes += packetSize;
-  sprintf(messagingOLEDText, "Total RX bytes: %d", totalReceivedBytes);
-  
-  int rssi = LoRa.packetRssi();
-  float snr = LoRa.packetSnr();
-  long freqErr = LoRa.packetFrequencyError();
-
-  if (debug_mode) {
-    printf(" Decoded content: '%s'\n", (char*)decodedMsg.content);  
-    printf(" Decoded originatorNodeId: %d\n", (int)decodedMsg.originatorNodeId);  
-    printf(" Decoded originatorEpochTime: %d\n", (int)decodedMsg.originatorEpochTime);  
-    printf(" Decoded originatorLat: %f\n", (float)decodedMsg.originatorLat);  
-    printf(" Decoded originatorLng: %f\n", (float)decodedMsg.originatorLng);  
-    printf(" Decoded originatorBattLevel: %d\n", (int)decodedMsg.originatorBattLevel);  
-    printf(" Decoded senderLat: %f\n", (float)decodedMsg.senderLat);  
-    printf(" Decoded senderLng: %f\n", (float)decodedMsg.senderLng);  
-    printf(" Decoded senderEpochTime: %d\n", (int)decodedMsg.senderEpochTime);
-    printf(" Decoded senderTimeQuality: %d\n", (int)decodedMsg.senderTimeQuality);
-
-    Serial.printf(" RSSI: %d. SNR: %f. Frequency error: %d.\n", rssi, snr, freqErr);
-  } 
   else {
-    Serial.printf("%d : ",(int)decodedMsg.originatorNodeId);
-    Serial.println((char*)decodedMsg.content);
-  }
-  
-  nodeLastEpoch[(int)decodedMsg.originatorNodeId] = millis();
-
-  // add those "reception quality" values to the struct  
-  decodedMsg.receiverRssi = rssi;
-  decodedMsg.has_receiverRssi = true;
-  decodedMsg.receiverSnr = snr;
-  decodedMsg.has_receiverSnr = true;
-  decodedMsg.receiverFreqErr = freqErr;
-  decodedMsg.has_receiverFreqErr = true;  
-
-  decodedMsg.receiverNodeId = nodeNum;
-
-  decodedMsg.receiverLat = gps.location.lat();
-  decodedMsg.receiverLng = gps.location.lng();
-  decodedMsg.receiverEpochTime = getCurrentSystemTimeAsEpoch();
-
-  //Serial.printf("pushing decoded msg to receivedMsgs queue\n");
-  //receivedMsgs.push(decodedMsg);
-
-  // if the sender sent a time of higher quality than ours, set /our/ system clock with it
-  if( (int)decodedMsg.senderTimeQuality > quality_time) {
-    if (debug_mode){
-      quality_time = 50; // Arbitrary need to define quality conditions and possibly a decay function
-      Serial.printf("setting our clock to sender's higher quality clock. sender's quality is %d. our quality is only %d.\n", (int)decodedMsg.senderTimeQuality, getOurTimeQuality());  
+    uint8_t incomingPkt[256];// for the results of protobuf decoding
+    int i = 0;
+    while (LoRa.available()) {
+      char c = (char)LoRa.read();
+      incomingPkt[i] = c;
+      i += 1;
     }
-    else {
-      Serial.println("Syncronizing Clock from Peer");
-    }
-    setSystemTimeByEpoch((int)decodedMsg.senderEpochTime);
-  } else {
+   
+    Msg decodedMsg = Msg_init_zero;
+    pb_istream_t istream = pb_istream_from_buffer(incomingPkt, packetSize);
+    bool status = pb_decode(&istream, Msg_fields, &decodedMsg);
+    if (!status) {
+      printf("Decoding FAILED: %s\n\n", PB_GET_ERROR(&istream));
+      return;
+    }   
+    
+    totalReceivedBytes += packetSize;
+    sprintf(messagingOLEDText, "Total RX bytes: %d", totalReceivedBytes);
+    
+    int rssi = LoRa.packetRssi();
+    float snr = LoRa.packetSnr();
+    long freqErr = LoRa.packetFrequencyError();
+
     if (debug_mode) {
-      Serial.printf("ignoring sender's time\n");
+      printf(" Decoded content: '%s'\n", (char*)decodedMsg.content);  
+      printf(" Decoded originatorNodeId: %d\n", (int)decodedMsg.originatorNodeId);  
+      printf(" Decoded originatorEpochTime: %d\n", (int)decodedMsg.originatorEpochTime);  
+      printf(" Decoded originatorLat: %f\n", (float)decodedMsg.originatorLat);  
+      printf(" Decoded originatorLng: %f\n", (float)decodedMsg.originatorLng);  
+      printf(" Decoded originatorBattLevel: %d\n", (int)decodedMsg.originatorBattLevel);  
+      printf(" Decoded senderLat: %f\n", (float)decodedMsg.senderLat);  
+      printf(" Decoded senderLng: %f\n", (float)decodedMsg.senderLng);  
+      printf(" Decoded senderEpochTime: %d\n", (int)decodedMsg.senderEpochTime);
+      printf(" Decoded senderTimeQuality: %d\n", (int)decodedMsg.senderTimeQuality);
+
+      Serial.printf(" RSSI: %d. SNR: %f. Frequency error: %d.\n", rssi, snr, freqErr);
+    } 
+    else {
+      if (!option_serial_transparent) {
+        Serial.printf("%d : ",(int)decodedMsg.originatorNodeId);
+        Serial.println((char*)decodedMsg.content);
+      }
+      else {
+        Serial.print((char*)decodedMsg.content);
+      }
     }
     
-  }
-  
-  //demonstrate our ability to calculate distance and course
-  double distanceKm = gps.distanceBetween(
-    gps.location.lat(),
-    gps.location.lng(),
-    (float)decodedMsg.senderLat,
-    (float)decodedMsg.senderLng) / 1000.0;
-  double courseTo = gps.courseTo(
-    gps.location.lat(),
-    gps.location.lng(),
-    (float)decodedMsg.senderLat,
-    (float)decodedMsg.senderLng);  
-  if (debug_mode) {
-    Serial.print(" Distance (km) from sender: ");
-    Serial.println(distanceKm);
-    //Serial.print(" Course to sender: ");
-    //Serial.println(courseTo);
-    Serial.print(" Cardinal direction to sender: ");
-    Serial.println(gps.cardinal(courseTo));      
+    nodeLastEpoch[(int)decodedMsg.originatorNodeId] = millis();
+
+    // add those "reception quality" values to the struct  
+    decodedMsg.receiverRssi = rssi;
+    decodedMsg.has_receiverRssi = true;
+    decodedMsg.receiverSnr = snr;
+    decodedMsg.has_receiverSnr = true;
+    decodedMsg.receiverFreqErr = freqErr;
+    decodedMsg.has_receiverFreqErr = true;  
+
+    decodedMsg.receiverNodeId = nodeNum;
+
+    decodedMsg.receiverLat = gps.location.lat();
+    decodedMsg.receiverLng = gps.location.lng();
+    decodedMsg.receiverEpochTime = getCurrentSystemTimeAsEpoch();
+
+    //Serial.printf("pushing decoded msg to receivedMsgs queue\n");
+    //receivedMsgs.push(decodedMsg);
+
+    // if the sender sent a time of higher quality than ours, set /our/ system clock with it
+    if( (int)decodedMsg.senderTimeQuality > quality_time) {
+      if (debug_mode){
+        quality_time = 50; // Arbitrary need to define quality conditions and possibly a decay function
+        Serial.printf("setting our clock to sender's higher quality clock. sender's quality is %d. our quality is only %d.\n", (int)decodedMsg.senderTimeQuality, getOurTimeQuality());  
+        Serial.println("Syncronizing Clock from Peer");
+      }
+      setSystemTimeByEpoch((int)decodedMsg.senderEpochTime);
+    } else {
+      if (debug_mode) {
+        Serial.printf("ignoring sender's time\n");
+      }
+      
+    }
+    
+    //demonstrate our ability to calculate distance and course
+    double distanceKm = gps.distanceBetween(
+      gps.location.lat(),
+      gps.location.lng(),
+      (float)decodedMsg.senderLat,
+      (float)decodedMsg.senderLng) / 1000.0;
+    double courseTo = gps.courseTo(
+      gps.location.lat(),
+      gps.location.lng(),
+      (float)decodedMsg.senderLat,
+      (float)decodedMsg.senderLng);  
+    if (debug_mode) {
+      Serial.print(" Distance (km) from sender: ");
+      Serial.println(distanceKm);
+      //Serial.print(" Course to sender: ");
+      //Serial.println(courseTo);
+      Serial.print(" Cardinal direction to sender: ");
+      Serial.println(gps.cardinal(courseTo));      
+    }
   }
 }
+
 
 void printBatteryLog() {
   File fileToRead = SPIFFS.open(BATT_LOG_FILENAME);
@@ -478,6 +516,7 @@ void printBatteryLog() {
   fileToRead.close();
 }
 
+
 void printMsgLog() {
   File fileToRead = SPIFFS.open(MSG_LOG_FILENAME);
  
@@ -493,6 +532,7 @@ void printMsgLog() {
   fileToRead.close();
 }
 
+
 void removeLogs() {
     Serial.printf("Removing log files...\n");      
     SPIFFS.remove(MSG_LOG_FILENAME);
@@ -507,17 +547,20 @@ void setSystemTimeByEpoch(time_t epoch) {
   settimeofday(&tv, &tz);
 }
 
+
 time_t getCurrentSystemTimeAsEpoch() {
   time_t epoch;
   time(&epoch);
   return epoch;
 }
 
+
 void printSystemTime() {
   struct tm now;
   getLocalTime(&now,0);
   Serial.println(&now, "%B %d %Y %H:%M:%S (%A)");
 }
+
 
 static time_t yearMonthDayHourMinuteSecondToEpoch(uint16_t year, uint8_t month, uint8_t day, uint8_t hour, uint8_t minute, uint8_t second) {
     struct tm t = {0};
@@ -548,6 +591,7 @@ void blue_led(bool state) {
     digitalWrite(BLUE_LED, LOW);
   } 
 }
+
 
 void queueNewOutboundMsg(char content[]) {
   uint8_t buffer[252]; // to store the results of the encoding process
@@ -587,17 +631,15 @@ void queueNewOutboundMsg(char content[]) {
 }
 
 bool sendAnyQueuedMessages() {
-  uint8_t buffer[252]; // to store the results of the encoding process
-
-  if(outboundMsgs.count() > 0 && !carrier_detect) {
-    Msg locallyComposedMsg = Msg_init_zero;
-    
-    pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));  
-    
-    // pop -------------------------------------------
+  if (carrier_detect) {
+    return false;
+  }
+  if(outboundMsgs.count() > 0) {
+    uint8_t buffer[252]; // to store the results of the encoding process
     Msg outboundMsg = outboundMsgs.pop(); // TODO: catch err
     
     // encode ----------------------------------------
+    pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));  
     bool status = pb_encode(&stream, Msg_fields, &outboundMsg);
     if (!status) {
       Serial.printf(" Encoding FAILED: %s\n\n", PB_GET_ERROR(&stream));
@@ -614,17 +656,18 @@ bool sendAnyQueuedMessages() {
         Serial.printf("%02X", buffer[i]);
       }
       Serial.println("");
-      }
+    }
+
     // transmit --------------------------------------    
     LoRa.beginPacket();
     LoRa.write(buffer, stream.bytes_written);
-    //Serial.printf(" calling LoRa.endPacket()... (we've seen that function 'hang' before. likely due to unsupported lora rf params)\n");
-    LoRa.endPacket();
-    //Serial.printf(" LoRa.endPacket() returned!\n");
-    kbSent++;
+    LoRa.endPacket(true);         // ASYNC true (non-blocking)
+    kbSent++;                     // TODO: this just packet count, need to convert to kB Same with kbRecv
+    blue_led(true);
     return true;
   }
 }
+
 
 void queueTest() {
   Serial.printf("queueTest() sentMsgs.count(): %d\n", sentMsgs.count());
@@ -665,18 +708,18 @@ byte getBatteryVoltageADCVal() {
 
 
 bool saveMsgsAndBattPctRemainingToFlash() {
-  Serial.printf(" saveMsgsAndBattPctRemainingToFlash()\n");
+  if (!option_serial_transparent) Serial.printf(" saveMsgsAndBattPctRemainingToFlash()\n");
   // write all Msg structs in the receivedMsgs and sentMsgs queues to the corresponding SPIFFS files
   File msgFileToAppend = SPIFFS.open(MSG_LOG_FILENAME, FILE_APPEND);
  
   if(!msgFileToAppend){
-    Serial.println("There was an error opening the msg file for appending");
+    if (!option_serial_transparent) if (!option_serial_transparent) Serial.println("There was an error opening the msg file for appending");
     return false;
   }
   Msg cur;
   while( receivedMsgs.count() > 0 ) {
     cur = receivedMsgs.pop();
-    Serial.printf(" originatorNodeId of Msg popped from receivedMsgs queue: %d\n", cur.originatorNodeId);
+    if (!option_serial_transparent) Serial.printf(" originatorNodeId of Msg popped from receivedMsgs queue: %d\n", cur.originatorNodeId);
     // encode protobuf, then hex-encode that to save to the flash file
     uint8_t buffer[1024]; // to store the results of the encoding process
     pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));  
@@ -684,18 +727,20 @@ bool saveMsgsAndBattPctRemainingToFlash() {
     // encode ----------------------------------------
     bool status = pb_encode(&stream, Msg_fields, &cur);
     if (!status) {
-      Serial.printf("Encoding FAILED: %s\n\n", PB_GET_ERROR(&stream));
+      if (!option_serial_transparent) Serial.printf("Encoding FAILED: %s\n\n", PB_GET_ERROR(&stream));
       return false;
     }
 
     char temp[5] = "\x00\x00\x00\x00";
-    Serial.print(" Length of encoded message: ");
-    Serial.println(stream.bytes_written);
+    if (debug_mode) {
+      Serial.print(" Length of encoded message: ");
+      Serial.println(stream.bytes_written);
+    }
     char serializedHexEncodedMsg[512] = "";
     
-    Serial.print(" Message: ");
+    //Serial.print(" Message: ");
     for( int i = 0; i<stream.bytes_written; i++ ) {
-      Serial.printf("%02X", buffer[i]);
+      //Serial.printf("%02X", buffer[i]);
       sprintf(temp, "%02X", buffer[i]);
       strcat(serializedHexEncodedMsg, temp);      
     }  
@@ -703,9 +748,9 @@ bool saveMsgsAndBattPctRemainingToFlash() {
     strcat(serializedHexEncodedMsg, "\n"); 
     
     if(msgFileToAppend.printf("%d, Compiled "__DATE__" "__TIME__", %s\n", nodeNum, serializedHexEncodedMsg)){ // TODO: use last ADC reading instead of reading it now
-      Serial.println("Msg log was appended");
+      if (debug_mode) Serial.println("Msg log was appended");
     } else {
-      Serial.println("Msg log append failed");
+      if (!option_serial_transparent) Serial.println("Msg log append failed");
     }    
   } 
 
@@ -715,19 +760,19 @@ bool saveMsgsAndBattPctRemainingToFlash() {
   File battFileToAppend = SPIFFS.open(BATT_LOG_FILENAME, FILE_APPEND);
  
   if(!battFileToAppend){
-    Serial.println("There was an error opening the battery file for appending");
+    if (!option_serial_transparent) Serial.println("There was an error opening the battery file for appending");
     return false;
   }
 
   int epochTime = getCurrentSystemTimeAsEpoch();
   if(battFileToAppend.printf("%d, Compiled "__DATE__" "__TIME__", %d, %d\n", nodeNum, epochTime, getBatteryVoltageADCVal() )){ // TODO: use last ADC reading instead of reading it now
-
-      Serial.println("Battery log was appended");
+      if (debug_mode) Serial.println("Battery log was appended");
   } else {
-      Serial.println("Battery log append failed");
+      if (!option_serial_transparent) Serial.println("Battery log append failed");
   }
   battFileToAppend.close();    
 }
+
 
 static void updateGPS() { // Call this frequently.      
     while (GPSSerial1.available()) {
@@ -757,6 +802,8 @@ static void updateGPS() { // Call this frequently.
         }
       }
 }
+
+
 void handleNewUSBSerialCommand(String command) {
   if(command.equals(String("/send"))) {
     Serial.println("Got 'send' cmd.");
@@ -816,6 +863,8 @@ void handleNewUSBSerialCommand(String command) {
     debug_mode = true;
   } else if(command.equals(String("/debug off"))) {
     debug_mode = false;
+  } else if(command.equals(String("/transparent on"))) {
+    option_serial_transparent = true;
   } else if(command.equals(String("/help"))) {
     Serial.println("DSC Mesh Router Help");
     Serial.println("------ general            ----------------------------");
@@ -826,24 +875,31 @@ void handleNewUSBSerialCommand(String command) {
     Serial.println("/dump battlog             show battery logs");
     Serial.println("/removelogs               remove logs from flash");        
     Serial.println("/date                     system datetime");
+    Serial.println("/transparent on           enable transparent serial mode ( ~~~+++ to disable )");
     Serial.println("------ lora radio params  -----------------------------");
-    Serial.println("/lora freq 9150000000      set lora frequency");
+    Serial.println("/lora freq 9150000000     set lora frequency");
     Serial.println("                            valid (902000000 + bw/2) - (928000000 - bw/2) (U.S.)");
-    Serial.println("/lora bw 250000            set lora bandwidth");
+    Serial.println("/lora bw 250000           set lora bandwidth");
     Serial.println("                            valid value: 7800,10400,15600,20800,31250,41700,62500,125000,250000");
-    Serial.println("/lora sf 7                 set lora spreading factor");
+    Serial.println("/lora sf 7                set lora spreading factor");
     Serial.println("                            valid 6,7,8,9,10,11,12");
-    Serial.println("/lora cr 8                 set lora coding rate");
+    Serial.println("/lora cr 8                set lora coding rate");
     Serial.println("                            valid 5,6,7,8  (4/5,4/6,4/7,4/8)");
     Serial.println("------ testing            -----------------------------");
-    Serial.println("/testmode on    enable transmit loop"); 
-    Serial.println("/testmode off   disable transmit loop"); 
+    Serial.println("/testmode on              enable transmit loop"); 
+    Serial.println("/testmode off             disable transmit loop"); 
   } else {
     Serial.printf("Got unknown command: %s\n", command.c_str());
   }
 }
 
+
 void loop() {
+  loopPeriod = millis() - lastLoopTime;
+  lastLoopTime = millis();
+  if (loopPeriod > loopPeriodMax) {
+    loopPeriodMax = loopPeriod;
+  }
 
   if (millis() - lastCheckActiveTime > checkActiveTime) {
     lastCheckActiveTime = millis();
@@ -859,8 +915,8 @@ void loop() {
     }
     activeNodes = totalActive;
   }
-  if (transmit_loop) {
-    if (millis() - lastTransmitLoop > TESTING_TRANSMIT_LOOP_INTERVAL_MS) {
+  if (transmit_loop && !option_serial_transparent) {
+    if (millis() - lastTransmitLoop > transmitLoopTime) {
       lastTransmitLoop = millis();
       queueNewOutboundMsg("bbq research raw dogging over lora");
     }    
@@ -885,13 +941,12 @@ void loop() {
   // N) Input any available data from LoRa radio -------------------------------------------------
   int packetSize = LoRa.parsePacket();
   if (packetSize) {
-    handleReceivedLoraPkt(packetSize); // decode to new stack struct, populate rssi+snr+freq_err
+    handleReceivedLoraPkt(packetSize);        // decode to new stack struct, populate rssi+snr+freq_err
     carrier_detect = true;
     carrier_timeout = 1000 + random(1000);    // CSMA (Helps Prevent Collisions)
     lastCarrierTime = millis();
-  } else {
-    //Serial.printf(" no lora pkt rx'd\n");
-  }
+    blue_led(true);
+  } 
   
   /*
   * GPS
@@ -909,24 +964,33 @@ void loop() {
 
   // N) Input any available USB serial command -------------------------------------------------
   //Check to see if an Incoming serial buffer has data to process
-  bool msg_ready = false;
   while (Serial.available() > 0) {
     char ch = Serial.read();
 
     if (option_serial_transparent) {
-       serial_queue.push(ch);
+      serial_queue.push(ch);
+      if (transparentEscape.isFull()) {
+        transparentEscape.shift();
+      }
+      transparentEscape.push(ch);
+      String checkEscape = "";
+      for (int i=0; i<transparentEscape.size(); i++) {
+        checkEscape += transparentEscape[i];
+      }
+      if (checkEscape.equals("~~~+++")) {
+        option_serial_transparent = false;
+        transparentEscape.clear();
+      }
     }
     else {
       if (ch == '\n' || ch == '\r') {
-        // Msg Complete
-        if (serial_queue[0] == '/') {      // Possible Command
+        if (serial_queue[0] == '/') {                       // Possible Command
           int ndx=0;
           while (!serial_queue.isEmpty()) {
             outboundSerial[ndx] += serial_queue.shift();    // Shift element from queue (FIFO)
             ndx++;
-            if (ndx > outboundSerialMax-1) break;    // Leave room for the NULL termination!
+            if (ndx > outboundSerialMax-1) break;           // Leave room for the NULL termination!
           }
-
           handleNewUSBSerialCommand(outboundSerial);
           for (int i=0; i<outboundSerialMax; i++) {
              outboundSerial[i] = '\0';
@@ -934,23 +998,20 @@ void loop() {
           serial_queue.clear();
         }
         else {
-          //serial_queue.push(ch);
           int ndx=0;
           while (!serial_queue.isEmpty()) {
             outboundSerial[ndx] += serial_queue.shift();    // Shift element from queue (FIFO)
             ndx++;
-            if (ndx > outboundSerialMax-1) break;    // Leave room for the NULL termination!
+            if (ndx > outboundSerialMax-1) break;           // Leave room for the NULL termination!
           }
-          outboundSerial[ndx+1] = '\0';         // NULL terminate outbound char array
+          outboundSerial[ndx+1] = '\0';                     // NULL terminate outbound char array
 
-          queueNewOutboundMsg(outboundSerial);  // ship it!
-          lastSendTime = millis();              // timestamp the message
-          interval = random(250) + 50;          // send interval in milliseconds
-
+          queueNewOutboundMsg(outboundSerial);              // ship it!
+          
           for (int i=0; i<outboundSerialMax; i++) {
              outboundSerial[i] = '\0';
           }
-          blue_led(true);
+
           serial_queue.clear();
           break;
         }
@@ -964,11 +1025,51 @@ void loop() {
 
   // save logs to flash every N minutes
   if (millis() - lastFlashWriteTime > FLASH_WRITE_INTERVAL_MS) {
-    Serial.printf("We've reached a %d-minute interval. Saving received/sent msgs and batt level to flash.\n", FLASH_WRITE_INTERVAL_MS/60/1000);
+    if (!option_serial_transparent) Serial.printf("We've reached a %d-minute interval. Saving received/sent msgs and batt level to flash.\n", FLASH_WRITE_INTERVAL_MS/1000);
     saveMsgsAndBattPctRemainingToFlash();   
     lastFlashWriteTime = millis();
   }
+
+  //Serial.printf("we just set system time by epoch to %d\n", yearMonthDayHourMinuteSecondToEpoch(gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute(), gps.time.second()));
+  //printCurrentSystemTimeYearMonthDayHourMinuteSecond();
   
-  // transmit if we have anything to transmit
-  sendAnyQueuedMessages();
+  //**TODO send interval is directly dependant on rf params and packet size
+  //**calculate optimal interval per packet
+  if (millis() - lastSendTime > TRANSMIT_INTERVAL_MS && !carrier_detect) {
+    lastSendTime = millis();
+
+    if (option_serial_transparent) {
+      int ndx=0;
+      if (!serial_queue.isEmpty()) {
+        if (LoRa.beginPacket()) {
+          while (!serial_queue.isEmpty()) {
+            outboundTransparentSerial[ndx] = serial_queue.shift();  // Shift element from queue (FIFO)
+            ndx++;
+            if (ndx > outboundTransparentMax-1) break;               // Leave room for the NULL termination!
+          }
+
+          if (ndx != 0) {
+            outboundTransparentSerial[ndx+1] = '\0';
+            LoRa.print(outboundTransparentSerial);
+            kbSent += ndx+1 / 1000.0;   //unit kB
+            blue_led(true);
+            
+            TRANSMIT_INTERVAL_MS = 25 + symbolRate * (ndx+1);
+            
+            for (int i=0; i<outboundTransparentMax; i++) {
+               outboundTransparentSerial[i] = '\0';
+            }
+          }
+          LoRa.endPacket(true);         // ASYNC (non-blocking)
+        }
+        else {
+          Serial.println("not ready to send");  // if get here our symbol rate is too small
+        }
+      }
+    }
+    else {
+      TRANSMIT_INTERVAL_MS = 250;          // send interval in milliseconds
+      sendAnyQueuedMessages();
+    }
+  }
 }

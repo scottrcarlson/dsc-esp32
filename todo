@@ -1,0 +1,18 @@
+scrappy todo list
+
+battery management
+	calculate accurate percentage based on a piece-wise linear function
+	send system into deep sleep if below a certain percentage
+	button press to wake up, OLED notify low battery and sleep again
+
+	detection of charging/discarging based on direction battery voltage is moving
+
+	if in charging mode, a different linear function is used to calc batt percentage
+	also, can calculate minutes until fully charged
+
+configuration system
+
+	persist settings, intialize system to SPIFF saved settings if they exist, else write to SPIFF and initialize with defaults.
+	add command to save settings
+	add command to show current settings
+
