@@ -149,6 +149,7 @@ int last_gps_second = 0;
 bool transmit_loop = true;
 int lastTransmitLoop = 0;
 const int TESTING_TRANSMIT_LOOP_INTERVAL_MS = 10000;
+const int transmitLoopTime = 10000; // TODO: rename as above
 
 int activeNodes = 0;  // Track nodes in range
 int nodeLastEpoch[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}; // 
