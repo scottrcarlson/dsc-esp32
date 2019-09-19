@@ -165,7 +165,6 @@ int lastLoopTime = 0;
 
 float symbolRate = 1.75 * (pow(2,7) / 125000.0) * 1000.0;   // symbol rate in sec = 2^SF / BW
 
-
 float oled_x_scale = 128.0 / 100.0;
 /***********
  * OLED Stats Display
@@ -177,8 +176,9 @@ void updateOLED(void) {
   display.setTextColor(WHITE);        // Draw white text
   display.setCursor(0,0);             // Start at top-left corner
   char* dst = (char*) malloc(128);
-  sprintf(dst, "DSCv4 %s", GIT_REV);
-  display.println(dst);
+  sprintf(dst, "DSCv4 %s:", GIT_REV);
+  display.print(dst);
+  display.println(janky_version);
 
   display.drawRect(0,58,128,2,0);// Clear Previous Bar
   display.drawRect(0,58,BATT_ADC_VAL_TO_PCT_REMAIN[getBatteryVoltageADCVal()]*oled_x_scale,2,1); // Draw a new one!
@@ -198,14 +198,12 @@ void updateOLED(void) {
   display.setTextSize(1); 
   display.print(F("tx:"));
   display.print(String(kbSent));
-  display.print(F(" rx:"));
+  display.print(F("   rx:"));
   display.println(String(kbRecv));
 
   struct tm now;
   getLocalTime(&now,0);
   display.println(&now, "%m/%d/%Y %H:%M:%S");
-  display.print("Rev: ");
-  display.println(janky_version);
   display.print("Loop(ms):");
   display.print(loopPeriod);
   display.print(" Max:");
