@@ -151,7 +151,6 @@ int last_gps_second = 0;
 bool transmit_loop = true;
 int lastTransmitLoop = 0;
 const int TESTING_TRANSMIT_LOOP_INTERVAL_MS = 10000;
-const int transmitLoopTime = 10000; // TODO: rename as above
 
 int activeNodes = 0;  // Track nodes in range
 int nodeLastEpoch[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
@@ -457,9 +456,6 @@ void handleReceivedLoraPkt(int packetSize){
   if (debug_mode) {
     // received a packet
     Serial.printf("Received LoRa packet of size %d\n", packetSize);
-
-    // print the entire received packet 
-    Serial.printf(" Packet bytes in hex: ");
   }
 
   if (option_serial_transparent) {
@@ -468,8 +464,7 @@ void handleReceivedLoraPkt(int packetSize){
       incoming += (char)LoRa.read();
     }
     Serial.print(incoming);
-  }
-  else {
+  } else {
     uint8_t incomingPkt[256];// for the results of protobuf decoding
     int i = 0;
     while (LoRa.available()) {
@@ -509,10 +504,8 @@ void handleReceivedLoraPkt(int packetSize){
     } 
     else {
       if (!option_serial_transparent) {
-        Serial.printf("%d : ",(int)decodedMsg.originatorNodeId);
-        Serial.println((char*)decodedMsg.content);
-      }
-      else {
+        Serial.printf("Received a msg from node ID %d: '%s'\n", (int)decodedMsg.originatorNodeId, (char*)decodedMsg.content);
+      } else {
         Serial.print((char*)decodedMsg.content);
       }
     }
@@ -781,18 +774,22 @@ byte getBatteryVoltageADCVal() {
 
 
 bool saveMsgsAndBattPctRemainingToFlash() {
-  if (!option_serial_transparent) Serial.printf(" saveMsgsAndBattPctRemainingToFlash()\n");
+  if (!option_serial_transparent && debug_mode) {
+    Serial.printf(" saveMsgsAndBattPctRemainingToFlash()\n");
+  }
   // write all Msg structs in the receivedMsgs and sentMsgs queues to the corresponding SPIFFS files
   File msgFileToAppend = SPIFFS.open(MSG_LOG_FILENAME, FILE_APPEND);
  
   if(!msgFileToAppend){
-    if (!option_serial_transparent) if (!option_serial_transparent) Serial.println("There was an error opening the msg file for appending");
+    if (!option_serial_transparent) {
+      Serial.println("There was an error opening the msg file for appending");
+    }
     return false;
   }
   Msg cur;
   while( receivedMsgs.count() > 0 ) {
     cur = receivedMsgs.pop();
-    if (!option_serial_transparent) Serial.printf(" originatorNodeId of Msg popped from receivedMsgs queue: %d\n", cur.originatorNodeId);
+    if (!option_serial_transparent && debug_mode) Serial.printf(" originatorNodeId of Msg popped from receivedMsgs queue: %d\n", cur.originatorNodeId);
     // encode protobuf, then hex-encode that to save to the flash file
     uint8_t buffer[1024]; // to store the results of the encoding process
     pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));  
@@ -817,7 +814,9 @@ bool saveMsgsAndBattPctRemainingToFlash() {
       sprintf(temp, "%02X", buffer[i]);
       strcat(serializedHexEncodedMsg, temp);      
     }  
-    Serial.println("");
+    if (debug_mode) {
+      Serial.println("");
+    }
     strcat(serializedHexEncodedMsg, "\n"); 
     
     if(msgFileToAppend.printf("%d, Compiled "__DATE__" "__TIME__", %s\n", nodeNum, serializedHexEncodedMsg)){
@@ -840,9 +839,13 @@ bool saveMsgsAndBattPctRemainingToFlash() {
 
   int epochTime = getCurrentSystemTimeAsEpoch();
   if(battFileToAppend.printf("%d, Compiled "__DATE__" "__TIME__", %d, %d\n", nodeNum, epochTime, getBatteryVoltageADCVal() )){ // TODO: use last ADC reading instead of reading it now
-      if (debug_mode) Serial.println("Battery log was appended");
+      if (debug_mode) {
+        Serial.println("Battery log was appended");
+      }
   } else {
-      if (!option_serial_transparent) Serial.println("Battery log append failed");
+      if (!option_serial_transparent) {
+        Serial.println("Battery log append failed");
+      }
   }
   battFileToAppend.close();    
 }
@@ -931,14 +934,19 @@ void handleNewUSBSerialCommand(String command) {
     }         
   } else if(command.equals(String("/testmode on"))) {
     transmit_loop = true;
+    Serial.println("test mode enabled");    
   } else if(command.equals(String("/testmode off"))) {
     transmit_loop = false;
+    Serial.println("test mode disabled");
   } else if(command.equals(String("/debug on"))) {
     debug_mode = true;
+    Serial.println("debug mode enabled");
   } else if(command.equals(String("/debug off"))) {
     debug_mode = false;
+    Serial.println("debug mode disabled");
   } else if(command.equals(String("/transparent on"))) {
     option_serial_transparent = true;
+    Serial.println("transparent serial mode enabled");    
   } else if(command.equals(String("/help"))) {
     Serial.println("DSC Mesh Router Help");
     Serial.println("------ general            ----------------------------");
@@ -960,7 +968,7 @@ void handleNewUSBSerialCommand(String command) {
     Serial.println("/lora cr 8                set lora coding rate");
     Serial.println("                            valid 5,6,7,8  (4/5,4/6,4/7,4/8)");
     Serial.println("------ testing            -----------------------------");
-    Serial.println("/testmode on              enable transmit loop"); 
+    Serial.printf( "/testmode on              enable %d ms transmit loop (enabled by default)\n", TESTING_TRANSMIT_LOOP_INTERVAL_MS); 
     Serial.println("/testmode off             disable transmit loop"); 
   } else {
     Serial.printf("Got unknown command: %s\n", command.c_str());
@@ -990,9 +998,9 @@ void loop() {
     activeNodes = totalActive;
   }
   if (transmit_loop && !option_serial_transparent) {
-    if (millis() - lastTransmitLoop > transmitLoopTime) {
+    if (millis() - lastTransmitLoop > TESTING_TRANSMIT_LOOP_INTERVAL_MS) {
       lastTransmitLoop = millis();
-      queueNewOutboundMsg("bbq research raw dogging over lora");
+      queueNewOutboundMsg("transmit loop test msg");
     }    
   }
   
@@ -1053,6 +1061,7 @@ void loop() {
       if (checkEscape.equals(escape_str)) {
         option_serial_transparent = false;
         transparentEscape.clear();
+        Serial.println("transparent serial mode disabled");    
       }
     }
     else {
@@ -1098,7 +1107,9 @@ void loop() {
 
   // save logs to flash every N minutes
   if (millis() - lastFlashWriteTime > FLASH_WRITE_INTERVAL_MS) {
-    if (!option_serial_transparent) Serial.printf("We've reached a %d-minute interval. Saving received/sent msgs and batt level to flash.\n", FLASH_WRITE_INTERVAL_MS/1000);
+    if (!option_serial_transparent && debug_mode) {
+      Serial.printf("We've reached a %d-minute interval. Saving received/sent msgs and batt level to flash.\n", FLASH_WRITE_INTERVAL_MS/1000/60);
+    }
     saveMsgsAndBattPctRemainingToFlash();   
     lastFlashWriteTime = millis();
   }
