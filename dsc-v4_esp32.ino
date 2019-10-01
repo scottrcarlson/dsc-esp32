@@ -77,6 +77,7 @@ char gpsTimeOLEDText[32] =               "GPS time: xxxxxxxxxxxxxxX";
 char evenMoreOLEDText[32] =              "=-=-=-=-=-=-=-=-=-=-=-=-="; /*__VERSION__  __DATE__ */
 char messagingOLEDText[32] =             "Last msg: xxxxxxxxxxxxxxX";
 char moreOLEDText[32] =                  "foo: xxxxxxxxxxxxxxxxxxxX";
+char escape_str[7] = "~~~+++";
 
 // GPS globals --------------------------------------------------
 TinyGPSPlus gps;                            
@@ -153,7 +154,7 @@ const int TESTING_TRANSMIT_LOOP_INTERVAL_MS = 10000;
 const int transmitLoopTime = 10000; // TODO: rename as above
 
 int activeNodes = 0;  // Track nodes in range
-int nodeLastEpoch[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}; // 
+int nodeLastEpoch[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 int timeNodeOutOfRange = 60000;
 
 int lastCheckActiveTime = 0;
@@ -235,6 +236,7 @@ static const unsigned char PROGMEM logo[] = {
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xdf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
 };
 
+float oled_x_scale = 128.0 / 100.0;
 
 /***********
  * OLED Stats Display
@@ -246,11 +248,14 @@ void updateOLED(void) {
   display.setTextColor(WHITE);        // Draw white text
   display.setCursor(0,0);             // Start at top-left corner
   char* dst = (char*) malloc(128);
-  sprintf(dst, "DSCv4 %s", GIT_REV);
+  sprintf(dst, "DSCv4 %s:", GIT_REV);
+  display.print(dst);
+  display.println(janky_version);
 
-  display.println(dst);
+  display.drawRect(0,58,128,2,0);// Clear Previous Bar
+  display.drawRect(0,58,BATT_ADC_VAL_TO_PCT_REMAIN[getBatteryVoltageADCVal()]*oled_x_scale,2,1); // Draw a new one!
 
-  display.setCursor(0,10);             // Start at top-left corner
+  display.setCursor(0,10);            // Start at top-left corner
   display.setTextSize(2);             // Draw 2X-scale text
   display.setTextColor(WHITE);
   display.print(F("DSC")); 
@@ -265,17 +270,12 @@ void updateOLED(void) {
   display.setTextSize(1); 
   display.print(F("tx:"));
   display.print(String(kbSent));
-  display.print(F(" rx:"));
-  display.print(String(kbRecv));
-  display.print(" ");
-  display.println(batteryVoltageOLEDText);
+  display.print(F("   rx:"));
+  display.println(String(kbRecv));
 
-  
   struct tm now;
   getLocalTime(&now,0);
   display.println(&now, "%m/%d/%Y %H:%M:%S");
-  display.print("Rev: ");
-  display.println(janky_version);
   display.print("Loop(ms):");
   display.print(loopPeriod);
   display.print(" Max:");
@@ -297,7 +297,6 @@ void setup() {
   while(Serial.available() > 0) {
     char t = Serial.read();
   }
-  //while (!Serial); // TODO: blink led to indicate failure?
 
   Serial.println("BBQ Research DSCv4 firmware version " __VERSION__ " compiled on " __DATE__ " at " __TIME__); // TODO: use COMPILE_DATE
   
@@ -1037,8 +1036,7 @@ void loop() {
     carrier_detect = false;
   }
 
-  // N) Input any available USB serial command -------------------------------------------------
-  //Check to see if an Incoming serial buffer has data to process
+  // check incoming serial buffer for data to process
   while (Serial.available() > 0) {
     char ch = Serial.read();
 
@@ -1052,7 +1050,7 @@ void loop() {
       for (int i=0; i<transparentEscape.size(); i++) {
         checkEscape += transparentEscape[i];
       }
-      if (checkEscape.equals("~~~+++")) {
+      if (checkEscape.equals(escape_str)) {
         option_serial_transparent = false;
         transparentEscape.clear();
       }
@@ -1108,8 +1106,6 @@ void loop() {
   //Serial.printf("we just set system time by epoch to %d\n", yearMonthDayHourMinuteSecondToEpoch(gps.date.year(), gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute(), gps.time.second()));
   //printCurrentSystemTimeYearMonthDayHourMinuteSecond();
   
-  //**TODO send interval is directly dependant on rf params and packet size
-  //**calculate optimal interval per packet
   if (millis() - lastSendTime > TRANSMIT_INTERVAL_MS && !carrier_detect) {
     lastSendTime = millis();
 
