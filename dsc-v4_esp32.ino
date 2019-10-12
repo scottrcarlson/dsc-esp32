@@ -137,8 +137,8 @@ long lastSendTime = 0;                // last send time
 int TRANSMIT_INTERVAL_MS = 250;       // interval between sends
 int cntSent = 0;
 int cntRecv = 0;
-int kbSent = 0;           // Total kb sent
-int kbRecv = 0;           // Total kb recv
+float kbSent = 0.0;           // Total kb sent
+float kbRecv = 0.0;           // Total kb recv
 
 bool carrier_detect = false; //Carrier detect FLAG (crude)
 int lastCarrierTime;
@@ -728,7 +728,7 @@ bool sendAnyQueuedMessages() {
     LoRa.beginPacket();
     LoRa.write(buffer, stream.bytes_written);
     LoRa.endPacket(true);         // ASYNC true (non-blocking)
-    kbSent++;                     // TODO: this just packet count, need to convert to kB Same with kbRecv
+    kbSent += stream.bytes_written / 1000.0;
     blue_led(true);
     return true;
   }
