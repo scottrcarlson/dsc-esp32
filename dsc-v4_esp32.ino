@@ -249,6 +249,8 @@ void updateOLED(void) {
   char* dst = (char*) malloc(128);
   sprintf(dst, "DSCv4 %s:", GIT_REV);
   display.print(dst);
+  free(dst);
+  
   display.println(janky_version);
 
   display.drawRect(0,58,128,2,0);// Clear Previous Bar
@@ -777,58 +779,60 @@ bool saveMsgsAndBattPctRemainingToFlash() {
   if (!option_serial_transparent && debug_mode) {
     Serial.printf(" saveMsgsAndBattPctRemainingToFlash()\n");
   }
-  // write all Msg structs in the receivedMsgs and sentMsgs queues to the corresponding SPIFFS files
-  File msgFileToAppend = SPIFFS.open(MSG_LOG_FILENAME, FILE_APPEND);
- 
-  if(!msgFileToAppend){
-    if (!option_serial_transparent) {
-      Serial.println("There was an error opening the msg file for appending");
-    }
-    return false;
-  }
-  Msg cur;
-  while( receivedMsgs.count() > 0 ) {
-    cur = receivedMsgs.pop();
-    if (!option_serial_transparent && debug_mode) Serial.printf(" originatorNodeId of Msg popped from receivedMsgs queue: %d\n", cur.originatorNodeId);
-    // encode protobuf, then hex-encode that to save to the flash file
-    uint8_t buffer[1024]; // to store the results of the encoding process
-    pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));  
 
-    // encode ----------------------------------------
-    bool status = pb_encode(&stream, Msg_fields, &cur);
-    if (!status) {
-      if (!option_serial_transparent) Serial.printf("Encoding FAILED: %s\n\n", PB_GET_ERROR(&stream));
+  if (!option_serial_transparent) {
+    // write all Msg structs in the receivedMsgs and sentMsgs queues to the corresponding SPIFFS files
+    File msgFileToAppend = SPIFFS.open(MSG_LOG_FILENAME, FILE_APPEND);
+   
+    if(!msgFileToAppend){
+      if (!option_serial_transparent) {
+        Serial.println("There was an error opening the msg file for appending");
+      }
       return false;
     }
+    Msg cur;
+    while( receivedMsgs.count() > 0 ) {
+      cur = receivedMsgs.pop();
+      if (!option_serial_transparent && debug_mode) Serial.printf(" originatorNodeId of Msg popped from receivedMsgs queue: %d\n", cur.originatorNodeId);
+      // encode protobuf, then hex-encode that to save to the flash file
+      uint8_t buffer[1024]; // to store the results of the encoding process
+      pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));  
 
-    char temp[5] = "\x00\x00\x00\x00";
-    if (debug_mode) {
-      Serial.print(" Length of encoded message: ");
-      Serial.println(stream.bytes_written);
-    }
-    char serializedHexEncodedMsg[512] = "";
-    
-    //Serial.print(" Message: ");
-    for( int i = 0; i<stream.bytes_written; i++ ) {
-      //Serial.printf("%02X", buffer[i]);
-      sprintf(temp, "%02X", buffer[i]);
-      strcat(serializedHexEncodedMsg, temp);      
-    }  
-    if (debug_mode) {
-      Serial.println("");
-    }
-    strcat(serializedHexEncodedMsg, "\n"); 
-    
-    if(msgFileToAppend.printf("%d, Compiled "__DATE__" "__TIME__", %s\n", nodeNum, serializedHexEncodedMsg)){
-      if (debug_mode) Serial.println("Msg log was appended");
-    } else {
-      if (!option_serial_transparent) Serial.println("Msg log append failed");
-    }    
-  } 
-  // TODO: save /sent/ messages to flash as well
+      // encode ----------------------------------------
+      bool status = pb_encode(&stream, Msg_fields, &cur);
+      if (!status) {
+        if (!option_serial_transparent) Serial.printf("Encoding FAILED: %s\n\n", PB_GET_ERROR(&stream));
+        return false;
+      }
 
-  msgFileToAppend.close(); 
-  
+      char temp[5] = "\x00\x00\x00\x00";
+      if (debug_mode) {
+        Serial.print(" Length of encoded message: ");
+        Serial.println(stream.bytes_written);
+      }
+      char serializedHexEncodedMsg[512] = "";
+      
+      //Serial.print(" Message: ");
+      for( int i = 0; i<stream.bytes_written; i++ ) {
+        //Serial.printf("%02X", buffer[i]);
+        sprintf(temp, "%02X", buffer[i]);
+        strcat(serializedHexEncodedMsg, temp);      
+      }  
+      if (debug_mode) {
+        Serial.println("");
+      }
+      strcat(serializedHexEncodedMsg, "\n"); 
+      
+      if(msgFileToAppend.printf("%d, Compiled "__DATE__" "__TIME__", %s\n", nodeNum, serializedHexEncodedMsg)){
+        if (debug_mode) Serial.println("Msg log was appended");
+      } else {
+        if (!option_serial_transparent) Serial.println("Msg log append failed");
+      }    
+    } 
+    // TODO: save /sent/ messages to flash as well
+
+    msgFileToAppend.close(); 
+  }  
   // now write battery level to flash -------------------------------------------------
   File battFileToAppend = SPIFFS.open(BATT_LOG_FILENAME, FILE_APPEND);
  
@@ -847,7 +851,7 @@ bool saveMsgsAndBattPctRemainingToFlash() {
         Serial.println("Battery log append failed");
       }
   }
-  battFileToAppend.close();    
+  battFileToAppend.close();  
 }
 
 
@@ -878,6 +882,7 @@ static void updateGPS() { // Call this frequently.
           gps_valid = false;
         }
       }
+  attemptGpsNmeaDecode(1000); 
 }
 
 
@@ -997,6 +1002,7 @@ void loop() {
     }
     activeNodes = totalActive;
   }
+
   if (transmit_loop && !option_serial_transparent) {
     if (millis() - lastTransmitLoop > TESTING_TRANSMIT_LOOP_INTERVAL_MS) {
       lastTransmitLoop = millis();
@@ -1015,11 +1021,13 @@ void loop() {
     blue_led(false);
   }
   
- 
-  // N) Input any available data from GPS and parse NMEA sentences ------------------------
-  attemptGpsNmeaDecode(1000); 
+  /*
+  *** GPS
+  * N) Input any available data from GPS and parse NMEA sentences
+  */
+  updateGPS();
 
-  
+
   // N) Input any available data from LoRa radio -------------------------------------------------
   int packetSize = LoRa.parsePacket();
   if (packetSize) {
@@ -1030,11 +1038,7 @@ void loop() {
     blue_led(true);
   } 
   
-  /*
-  * GPS
-  */
-  updateGPS();
-
+ 
   // N) Input battery voltage value -----------------------------------------------------------------
   byte adcVal = getBatteryVoltageADCVal();
   sprintf(batteryVoltageOLEDText, "bat:%d%%", BATT_ADC_VAL_TO_PCT_REMAIN[adcVal]); 
