@@ -374,9 +374,15 @@ void setup() {
       break;
     case 0x648E:
       nodeNum = 11;
-      break;               
+      break;
+    case 0xF4E0:
+      nodeNum = 12;
+      break;        
     default : /* Optional */
       Serial.println(" we're running on an unexpected esp32 device!");
+      Serial.print("Chip ID: ");
+      Serial.println((uint16_t)(chipid>>32));
+      delay(25000);
   }  
   if (!option_serial_transparent) Serial.printf(" Node ID (%d) (0x%04X) initialized.\n", nodeNum, (uint16_t)(chipid>>32));
   
@@ -436,13 +442,7 @@ static void attemptGpsNmeaDecode(unsigned long ms) {   // TODO: how much time is
   //} while (millis() - start < ms); // this sets sets an upper limit on time consumed
   
   if (millis() > 5000 && gps.charsProcessed() < 10) { // TODO: use constants
-    if (!option_serial_transparent) Serial.println(F("\nwe've received <10 chars from GPS and we booted >5sec ago - check gps wiring!"));
-    // dump the stream to Serial
-    //Serial.println("GPS stream dump:");
-    //while (true) { // infinite loop
-    //  if (ss.available() > 0) // any data coming in?
-    //    Serial.write(ss.read());   
-    //  } 
+    //if (!option_serial_transparent) Serial.println(F("\nwe've received <10 chars from GPS and we booted >5sec ago - check gps wiring!"));
   }   
 }
 
@@ -478,8 +478,10 @@ void handleReceivedLoraPkt(int packetSize){
     Msg decodedMsg = Msg_init_zero;
     pb_istream_t istream = pb_istream_from_buffer(incomingPkt, packetSize);
     bool status = pb_decode(&istream, Msg_fields, &decodedMsg);
-    if (!status) {
+    if (!status && debug_mode) {
       printf("Decoding FAILED: %s\n\n", PB_GET_ERROR(&istream));
+      printf("Size: %d\n", i);
+      printf("Data: %s\n", incomingPkt);
       return;
     }   
     
@@ -860,28 +862,28 @@ static void updateGPS() { // Call this frequently.
       gps.encode(GPSSerial1.read());
 
     }
-     if (gps.time.isUpdated() && gps.date.isUpdated()) {
-        uint8_t hour = gps.time.hour();
-        uint8_t minute = gps.time.minute();
-        uint8_t second = gps.time.second();
-        uint16_t year = gps.date.year();
-        uint8_t month = gps.date.month();
-        uint8_t day = gps.date.day();
+   if (gps.time.isUpdated() && gps.date.isUpdated()) {
+      uint8_t hour = gps.time.hour();
+      uint8_t minute = gps.time.minute();
+      uint8_t second = gps.time.second();
+      uint16_t year = gps.date.year();
+      uint8_t month = gps.date.month();
+      uint8_t day = gps.date.day();
 
-        if (month != 0 && second != last_gps_second) {
-          last_gps_second = second;
-          time_t epoch = yearMonthDayHourMinuteSecondToEpoch(year, month, day, hour, minute, second);
-          setSystemTimeByEpoch(epoch);
-          gps_valid = true;
-          quality_time = 100;
-        }
-        else {
-          if (gps_valid) {
-            quality_time = 90;
-          }
-          gps_valid = false;
-        }
+      if (month != 0 && second != last_gps_second) {
+        last_gps_second = second;
+        time_t epoch = yearMonthDayHourMinuteSecondToEpoch(year, month, day, hour, minute, second);
+        setSystemTimeByEpoch(epoch);
+        gps_valid = true;
+        quality_time = 100;
       }
+      else {
+        if (gps_valid) {
+          quality_time = 90;
+        }
+        gps_valid = false;
+      }
+    }
   attemptGpsNmeaDecode(1000); 
 }
 
